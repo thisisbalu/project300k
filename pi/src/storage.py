@@ -75,6 +75,24 @@ def get_connection() -> sqlite3.Connection:
     # Negative value = size in KiB (8000 KiB = ~8MB). Safe on Pi 3B's 1GB RAM.
     conn.execute("PRAGMA cache_size=-8000")
 
+    # Integrity check on every open — detects corruption from a power cut that
+    # WAL recovery could not fully repair. On failure, the corrupt database is
+    # renamed to .corrupt and a fresh empty database is started rather than
+    # crash-looping on every boot with an unrecoverable OperationalError.
+    result = conn.execute("PRAGMA integrity_check").fetchone()
+    if result[0] != "ok":
+        logger.error(
+            f"SQLite integrity check failed: {result[0]} — "
+            "renaming corrupt DB and starting fresh"
+        )
+        conn.close()
+        import os
+        corrupt_path = config.DB_PATH + ".corrupt"
+        os.rename(config.DB_PATH, corrupt_path)
+        logger.warning(f"Corrupt DB saved to {corrupt_path}")
+        # Recurse to open a fresh database — integrity check will pass on empty DB.
+        return get_connection()
+
     logger.info(f"SQLite connected: {config.DB_PATH}")
     return conn
 

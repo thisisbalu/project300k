@@ -190,6 +190,9 @@ STANDARD_30S: list[PIDConfig] = [
         interval_s=30,
     ),
     PIDConfig(
+        # Note: "AMBIANT" is a typo in the python-obd 0.7.3 library itself
+        # (should be AMBIENT). Do NOT "fix" this spelling — it must match
+        # the library constant exactly or the import will fail at runtime.
         command=obd.commands.AMBIANT_AIR_TEMP,
         table="obd_30s",
         column="ambient_air_temp_c",

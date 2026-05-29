@@ -80,7 +80,18 @@ def _load() -> Config:
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
                     key, _, value = line.partition("=")
-                    os.environ.setdefault(key.strip(), value.strip())
+                    key = key.strip()
+                    # setdefault only sets if not already in environment.
+                    # Log which source wins so an operator editing the file
+                    # while an env var is set understands why their change
+                    # has no effect.
+                    if key in os.environ:
+                        print(
+                            f"INFO  | Config: {key} sourced from environment (overrides config file)",
+                            file=sys.stderr,
+                        )
+                    else:
+                        os.environ[key] = value.strip()
     else:
         print(
             f"WARNING | Config file not found at {CONFIG_PATH}, relying on environment variables",
