@@ -45,22 +45,14 @@
 
 ---
 
-## 5. SQLite Schema (`storage.py`)
-- [ ] Connect to DB_PATH
-- [ ] Enable WAL mode: `PRAGMA journal_mode=WAL`
-- [ ] Enable foreign keys: `PRAGMA foreign_keys=ON`
-- [ ] Create tables if not exist:
-  - `trips`
-  - `obd_1s`
-  - `obd_5s`
-  - `obd_30s`
-  - `ford_obd_5s`
-  - `ford_obd_10s`
-  - `ford_obd_20s`
-  - `dtc_events`
-  - `pi_health_log`
-- [ ] Create indexes on `timestamp`, `trip_id`, `synced` per table
-- [ ] `schema_version` table for future migrations
+## 5. SQLite Schema (`storage.py`) ✓
+- [x] Connect to DB_PATH
+- [x] Enable WAL mode: `PRAGMA journal_mode=WAL`
+- [x] Enable foreign keys: `PRAGMA foreign_keys=ON`
+- [x] Create tables: trips, obd_1s, obd_5s, obd_30s, dtc_events, pi_health_log
+- [x] Create indexes on timestamp, trip_id, synced, code per table
+- [x] schema_version table for future migrations
+- [ ] ford_obd_5s, ford_obd_10s, ford_obd_20s — deferred until FORScan confirms addresses
 
 ---
 
