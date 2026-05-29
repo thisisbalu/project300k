@@ -17,6 +17,7 @@ def check_rtc() -> None:
 
 def main() -> None:
     logger.info("Starting obd-collector")
+    logger.info(f"Config loaded: {config}")
 
     check_rtc()
     health.increment_restart_count()

@@ -22,10 +22,10 @@
 
 ---
 
-## 2. Configuration (`config.py`)
-- [ ] Read from `/etc/obd-collector/config.env`
-- [ ] Required values: API_URL, API_KEY, TAILSCALE_IP, OBD_PORT, SYNC_BATCH_SIZE, DB_PATH, LOG_PATH
-- [ ] Fail fast on missing required config — log error and exit cleanly
+## 2. Configuration (`config.py`) ✓
+- [x] Read from `/etc/obd-collector/config.env`
+- [x] Required values: API_URL, API_KEY, TAILSCALE_IP, OBD_PORT, SYNC_BATCH_SIZE, DB_PATH, LOG_PATH
+- [x] Fail fast on missing required config — log error and exit cleanly
 
 ---
 
