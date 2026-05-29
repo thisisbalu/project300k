@@ -152,7 +152,8 @@ def _write_health_snapshot(conn: sqlite3.Connection) -> None:
 
     row = {
         "id": str(uuid.uuid4()),
-        "synced_at": datetime.now(timezone.utc).isoformat(),
+        # Column name is "timestamp" in pi_health_log schema — not "synced_at".
+        "timestamp": datetime.now(timezone.utc).isoformat(),
         "synced": 0,
         **metrics,
     }

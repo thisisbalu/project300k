@@ -14,6 +14,13 @@ solves this by acting as a producer/consumer buffer:
 This means no two writers ever touch SQLite simultaneously, and no OBD
 callback ever blocks waiting for a disk write to complete.
 
+Commit strategy:
+    Rows are batched and committed every COMMIT_BATCH_SIZE rows or every
+    COMMIT_INTERVAL_S seconds, whichever comes first. Per-row commits at
+    1Hz with 15 active PIDs = 15+ fsyncs/second to USB flash, which causes
+    severe write amplification and premature drive wear. Batching reduces
+    this to ~1 fsync every 2 seconds under normal polling load.
+
 Usage:
     writer = QueueWriter(conn)
     writer.start()
@@ -24,17 +31,30 @@ Usage:
 import queue
 import sqlite3
 import threading
+import time
 from typing import Any
 
 from logger import logger
+
+# Commit after this many rows or after COMMIT_INTERVAL_S, whichever comes first.
+COMMIT_BATCH_SIZE  = 30   # rows — at 15 PIDs/s this is ~2s of data per commit
+COMMIT_INTERVAL_S  = 2.0  # seconds — maximum time between commits
+
+# Reject writes to tables not in this set to catch routing bugs early.
+ALLOWED_TABLES = {
+    "obd_1s", "obd_5s", "obd_30s",
+    "ford_obd_5s", "ford_obd_10s", "ford_obd_20s",
+    "dtc_events", "pi_health_log", "trips",
+}
 
 
 class QueueWriter:
     """Serialises SQLite writes from multiple OBD callback threads.
 
     Attributes:
-        _queue:       Unbounded thread-safe FIFO queue of (table, row) tuples.
-        _conn:        SQLite connection — only accessed from _drain thread.
+        conn:         SQLite connection — exposed for direct UPDATE calls
+                      (e.g. update_trip_end) that cannot go through INSERT.
+        _queue:       Bounded thread-safe FIFO queue of (table, row) tuples.
         _stop_event:  Signals the drain loop to exit after flushing.
         _thread:      Daemon writer thread running _drain.
     """
@@ -45,11 +65,11 @@ class QueueWriter:
         Args:
             conn: sqlite3.Connection returned by storage.get_connection().
         """
-        self._queue: queue.Queue = queue.Queue()
+        # Bounded queue — drops oldest rows (with a log) if the writer thread
+        # stalls, rather than growing without bound and causing OOM on 1GB Pi.
+        self._queue: queue.Queue = queue.Queue(maxsize=1000)
         self._conn = conn
-        # Expose conn publicly so storage functions (e.g. update_trip_end)
-        # can issue direct UPDATE statements that cannot go through the
-        # INSERT-only queue path.
+        # Expose conn for direct UPDATE statements that bypass the queue.
         self.conn = conn
         self._stop_event = threading.Event()
         self._thread = threading.Thread(
@@ -68,68 +88,94 @@ class QueueWriter:
         Call this during shutdown before closing the database connection.
         """
         self._stop_event.set()
-        self._thread.join()
+        self._thread.join(timeout=10)
+        if self._thread.is_alive():
+            logger.warning("QueueWriter thread did not stop within 10s — possible SQLite hang")
         logger.info("QueueWriter stopped")
 
     def enqueue(self, table: str, row: dict[str, Any]) -> None:
         """Put a row onto the write queue.
 
         Non-blocking. Safe to call from any thread including OBD callbacks.
+        Drops the row and logs an error if the queue is full (writer stalled).
 
         Args:
-            table: Target SQLite table name (e.g. "obd_1s").
-            row:   Dict of column name → value. None values are stored as NULL.
+            table: Target SQLite table name (must be in ALLOWED_TABLES).
+            row:   Dict of column name → value. None values stored as NULL.
         """
-        self._queue.put((table, row))
+        if table not in ALLOWED_TABLES:
+            logger.error(f"Rejected write to unknown table: {table!r} — check routing")
+            return
+
+        try:
+            self._queue.put_nowait((table, row))
+        except queue.Full:
+            # Writer thread is stalled — log and drop rather than block the
+            # OBD callback thread or grow the queue unboundedly.
+            logger.error(f"QueueWriter full — dropping row for table '{table}'")
 
     def _drain(self) -> None:
-        """Drain the queue and write rows to SQLite.
+        """Drain the queue and write rows to SQLite in batches.
 
-        Runs on the dedicated writer thread. Processes rows one at a time
-        using a 100ms timeout on each dequeue so the stop signal is checked
-        regularly without busy-waiting.
+        Accumulates rows up to COMMIT_BATCH_SIZE or COMMIT_INTERVAL_S,
+        then commits once. This reduces USB flash fsyncs from ~15/s (per-row)
+        to ~1 per COMMIT_INTERVAL_S under normal polling load.
 
         On stop signal, continues draining until the queue is fully empty
-        before returning — ensures no in-flight rows are lost on clean shutdown.
-
-        Write errors are logged and discarded rather than crashing the thread.
-        A single bad row must not stop all subsequent writes.
+        and commits any remaining unflushed rows before returning.
         """
+        pending: list[tuple[str, dict]] = []
+        last_commit = time.monotonic()
+
         while True:
-            # Check stop signal only after the queue is empty to ensure
-            # all enqueued rows are persisted before the thread exits.
-            if self._stop_event.is_set() and self._queue.empty():
+            should_stop = self._stop_event.is_set() and self._queue.empty()
+
+            # Commit pending rows if batch is full, interval elapsed, or stopping.
+            elapsed = time.monotonic() - last_commit
+            if pending and (len(pending) >= COMMIT_BATCH_SIZE or elapsed >= COMMIT_INTERVAL_S or should_stop):
+                self._flush(pending)
+                pending.clear()
+                last_commit = time.monotonic()
+
+            if should_stop:
                 break
 
             try:
-                # Block for up to 100ms waiting for a row. The short timeout
-                # allows the stop condition above to be re-evaluated frequently
-                # without spinning the CPU at 100%.
                 table, row = self._queue.get(timeout=0.1)
+                pending.append((table, row))
+                self._queue.task_done()
             except queue.Empty:
                 continue
 
-            try:
-                self._write(table, row)
-            except Exception as e:
-                # Log and discard — one bad row must not halt all subsequent writes.
-                logger.error(f"SQLite write error on table '{table}': {e} — row discarded")
-            finally:
-                self._queue.task_done()
-
-    def _write(self, table: str, row: dict[str, Any]) -> None:
-        """Build and execute a parameterised INSERT for one row.
-
-        Constructs the SQL dynamically from the row dict keys. Uses
-        named placeholders (:key) to safely bind values — no string
-        interpolation, no SQL injection risk.
+    def _flush(self, pending: list[tuple[str, dict]]) -> None:
+        """Write all pending rows in a single transaction and commit once.
 
         Args:
-            table: Target SQLite table name.
+            pending: List of (table, row) tuples to write.
+        """
+        try:
+            for table, row in pending:
+                try:
+                    self._insert(table, row)
+                except Exception as e:
+                    # Log and skip bad rows — one bad row must not prevent
+                    # the rest of the batch from being committed.
+                    logger.error(f"SQLite write error on '{table}': {e} — row discarded")
+            self._conn.commit()
+        except Exception as e:
+            logger.error(f"SQLite commit failed: {e}")
+
+    def _insert(self, table: str, row: dict[str, Any]) -> None:
+        """Build and execute a parameterised INSERT for one row.
+
+        Uses named placeholders (:key) to bind values safely — no string
+        interpolation, no SQL injection risk from row data.
+
+        Args:
+            table: Target SQLite table name (pre-validated by enqueue).
             row:   Dict of column name → value to insert.
         """
-        columns = ", ".join(row.keys())
+        columns      = ", ".join(row.keys())
         placeholders = ", ".join(f":{k}" for k in row.keys())
         sql = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
         self._conn.execute(sql, row)
-        self._conn.commit()
