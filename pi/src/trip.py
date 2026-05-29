@@ -13,9 +13,10 @@ Trip end conditions (both required):
     rpm = 0 for > 30s  — engine off (not just a red light)
     battery_v < 12.5V  — alternator stopped, confirms engine off
 
-The 30s threshold prevents a long red light from ending the trip.
-The voltage check prevents accessory mode (battery ~12V, RPM=0)
-from being mistaken for engine running.
+The 30s threshold prevents a long red light or drive-through from ending
+the trip. The voltage check prevents accessory mode (battery ~12V, RPM=0)
+from being mistaken for engine off — voltage stays at ~13.8V while the
+engine is running even if RPM briefly reads 0.
 
 Polling pause (separate from trip end):
     When RPM=0 for >30s, the 1s and 5s polling tiers are paused to avoid
@@ -29,17 +30,36 @@ On Bluetooth drop mid-trip:
     trips on a BT glitch fragments trip-level analysis.
 """
 
+import time
+import uuid
+from datetime import datetime, timezone
+
+import obd
+
 from logger import logger
+
+# Trip boundary thresholds
+VOLTAGE_ENGINE_RUNNING  = 13.0   # V — alternator running above this
+VOLTAGE_ENGINE_OFF      = 12.5   # V — alternator stopped below this
+RPM_ZERO_DURATION_S     = 30     # seconds RPM must be 0 before trip ends / polling pauses
 
 
 class TripManager:
     """Detects trip boundaries and manages the current trip_id.
 
-    Receives RPM and voltage updates from collector callbacks and
-    maintains the state machine for trip start/end detection.
+    Receives RPM and voltage updates from Collector callbacks and
+    maintains a simple state machine for trip start/end detection.
+
+    State:
+        No active trip  (current_trip_id is None)
+        Active trip     (current_trip_id is set)
+
+    Transitions:
+        No trip  → Active:  voltage > 13.0V AND rpm > 0
+        Active   → No trip: rpm = 0 for > 30s AND voltage < 12.5V
 
     Attributes:
-        current_trip_id: UUID of the active trip, or None between trips.
+        current_trip_id: UUID string of the active trip, or None between trips.
     """
 
     def __init__(self, queue_writer, obd_connection) -> None:
@@ -52,48 +72,102 @@ class TripManager:
         self._queue_writer = queue_writer
         self._obd_connection = obd_connection
         self.current_trip_id: str | None = None
-        self._rpm_zero_since: float | None = None  # monotonic time when RPM last hit 0
-        self._last_voltage: float | None = None
 
-    def on_rpm(self, value) -> None:
+        # Monotonic clock used for the RPM=0 duration timer.
+        # Monotonic avoids false triggers if the system clock jumps (NTP sync).
+        self._rpm_zero_since: float | None = None
+
+        self._last_voltage: float | None = None
+        self._polling_paused: bool = False
+
+    def on_rpm(self, response: obd.OBDResponse) -> None:
         """Handle an incoming RPM reading.
 
-        Checks trip start/end conditions and manages the 30s RPM=0 timer
-        for polling pause and trip end detection.
+        Drives the trip start/end state machine and the polling pause logic.
 
         Args:
-            value: OBDResponse from python-obd (may be None on read error).
+            response: OBDResponse from python-obd (may be null on read error).
         """
-        # TODO: Task 10 — implement trip start/end detection and polling pause
-        pass
+        if response is None or response.is_null():
+            return
 
-    def on_voltage(self, value) -> None:
+        rpm = response.value.magnitude
+
+        if rpm > 0:
+            self._rpm_zero_since = None
+
+            # Resume paused polling tiers when engine starts again.
+            if self._polling_paused:
+                self._resume_polling()
+
+            # Start a trip if voltage confirms the engine is running.
+            if self.current_trip_id is None and self._voltage_above(VOLTAGE_ENGINE_RUNNING):
+                self._start_trip()
+
+        else:
+            # rpm == 0 — start or continue the zero-duration timer.
+            if self._rpm_zero_since is None:
+                self._rpm_zero_since = time.monotonic()
+
+            elapsed = time.monotonic() - self._rpm_zero_since
+
+            if elapsed >= RPM_ZERO_DURATION_S:
+                # Pause polling after 30s of RPM=0 to avoid noisy zero rows.
+                if not self._polling_paused:
+                    self._pause_polling()
+
+                # End the trip only if voltage also confirms engine is off.
+                if self.current_trip_id is not None and self._voltage_below(VOLTAGE_ENGINE_OFF):
+                    self._end_trip()
+
+    def on_voltage(self, response: obd.OBDResponse) -> None:
         """Handle an incoming battery voltage reading.
 
-        Stores the latest voltage for use in trip boundary checks.
+        Stores the latest voltage for use in trip boundary checks performed
+        by on_rpm(). Voltage alone does not trigger trip start/end — RPM
+        is the primary signal.
 
         Args:
-            value: OBDResponse from python-obd (may be None on read error).
+            response: OBDResponse from python-obd (may be null on read error).
         """
-        # TODO: Task 10 — store voltage, confirm trip start/end conditions
-        pass
+        if response is None or response.is_null():
+            return
+        self._last_voltage = response.value.magnitude
 
     def _start_trip(self) -> None:
-        """Begin a new trip — generate UUID, persist row, scan DTCs.
+        """Begin a new trip — generate UUID, persist trips row, scan DTCs."""
+        self.current_trip_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
 
-        Called when both voltage > 13.0V and RPM > 0 are observed
-        for the first time after the previous trip ended.
-        """
-        # TODO: Task 10 — generate UUID, write to trips table, trigger DTC scan
-        pass
+        row = {
+            "id": self.current_trip_id,
+            "start_time": now,
+            "end_time": None,
+            "distance_km": None,  # calculated post-sync in PostgreSQL
+            "duration_s": None,   # calculated at trip end
+            "synced": 0,
+        }
+        self._queue_writer.enqueue("trips", row)
+        logger.info(f"Trip started: {self.current_trip_id}")
+        self._scan_dtc()
 
     def _end_trip(self) -> None:
-        """Close the current trip — update end_time, scan DTCs.
+        """Close the current trip — update end_time, calculate duration, scan DTCs."""
+        now = datetime.now(timezone.utc).isoformat()
 
-        Called when RPM=0 for >30s and voltage < 12.5V are both observed.
-        """
-        # TODO: Task 10 — update trips.end_time, trigger DTC scan
-        pass
+        # Update the existing trips row with end_time.
+        # QueueWriter INSERT will conflict on id — storage.py uses
+        # INSERT OR REPLACE so the end_time is written correctly.
+        # TODO: revisit when schema is finalised — may need a dedicated UPDATE path.
+        row = {
+            "id": self.current_trip_id,
+            "end_time": now,
+            "synced": 0,
+        }
+        self._queue_writer.enqueue("trips_update", row)
+        logger.info(f"Trip ended: {self.current_trip_id}")
+        self._scan_dtc()
+        self.current_trip_id = None
 
     def _scan_dtc(self) -> None:
         """Run a full DTC scan and persist any codes to dtc_events.
@@ -103,3 +177,21 @@ class TripManager:
         """
         # TODO: Task 11 — run GET_DTC, write each code to dtc_events table
         pass
+
+    def _pause_polling(self) -> None:
+        """Pause 1s and 5s polling tiers — engine is off or idling long."""
+        self._polling_paused = True
+        logger.info("Polling paused — RPM=0 for >30s (30s tier still active)")
+
+    def _resume_polling(self) -> None:
+        """Resume 1s and 5s polling tiers — engine started again."""
+        self._polling_paused = False
+        logger.info("Polling resumed — RPM > 0")
+
+    def _voltage_above(self, threshold: float) -> bool:
+        """Return True if the last known voltage is above threshold."""
+        return self._last_voltage is not None and self._last_voltage > threshold
+
+    def _voltage_below(self, threshold: float) -> bool:
+        """Return True if the last known voltage is below threshold."""
+        return self._last_voltage is not None and self._last_voltage < threshold

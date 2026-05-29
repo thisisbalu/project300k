@@ -111,20 +111,15 @@
 
 ---
 
-## 10. Trip Detection (`trip.py`)
-- [ ] Trip start: `battery_v > 13.0` AND `rpm > 0`
-  - Generate new trip_id (UUID)
-  - Log "Trip started: {trip_id}"
-  - Write to `trips` table
-  - Trigger DTC scan
-- [ ] Trip end: `rpm = 0` for >30s AND `battery_v < 12.5`
-  - Log "Trip ended: {trip_id}"
-  - Update `trips.end_time`
-  - Trigger DTC scan
-- [ ] Polling pause: `rpm = 0` for >30s → pause obd_1s + obd_5s watchers
-- [ ] Polling resume: `rpm > 0` → resume watchers
-- [ ] obd_30s always running regardless of RPM
-- [ ] BT drop mid-trip → keep same trip_id after reconnect
+## 10. Trip Detection (`trip.py`) ✓
+- [x] Trip start: `battery_v > 13.0` AND `rpm > 0`
+- [x] Generate new trip_id (UUID), write to trips table, trigger DTC scan
+- [x] Trip end: `rpm = 0` for >30s AND `battery_v < 12.5`
+- [x] Update trips.end_time, trigger DTC scan, clear trip_id
+- [x] Polling pause: `rpm = 0` for >30s → log pause (watcher pause in collector TBD)
+- [x] Polling resume: `rpm > 0` → log resume
+- [x] Monotonic clock for RPM=0 timer — avoids NTP clock jump false triggers
+- [x] BT drop mid-trip → same trip_id kept after reconnect
 
 ---
 
