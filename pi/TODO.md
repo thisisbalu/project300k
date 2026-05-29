@@ -92,12 +92,12 @@
 
 ---
 
-## 8. OBD Connection (`obd_connection.py`)
-- [ ] Connect: `obd.OBD("/dev/rfcomm0", fast=False, timeout=30)`
-- [ ] Retry every 15s on failure — log each attempt with count
-- [ ] Log success with device name
-- [ ] Expose reconnect method for mid-trip BT drop recovery
-- [ ] Track reconnect count for Pi health payload
+## 8. OBD Connection (`obd_connection.py`) ✓
+- [x] Connect: `obd.OBD("/dev/rfcomm0", fast=False, timeout=30)`
+- [x] Retry every 15s on failure — log each attempt with count
+- [x] Log success with device name
+- [x] Expose reconnect method for mid-trip BT drop recovery
+- [x] Track reconnect count for Pi health payload
 
 ---
 

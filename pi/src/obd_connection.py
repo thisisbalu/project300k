@@ -49,24 +49,66 @@ class OBDConnection:
         RETRY_INTERVAL_S seconds on failure — the dongle may not be
         powered on immediately at Pi boot (ignition delay).
 
-        Logs each retry attempt and logs success with the device name.
+        Logs each retry attempt with the attempt number and logs success
+        with the connected port name.
         """
-        # TODO: Task 8 — implement connection loop with fast=False, timeout=30
-        pass
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                logger.info(f"OBD connection attempt {attempt} on {config.OBD_PORT}")
+
+                # fast=False is required on Pi — the default AT fast init
+                # command causes the Pi Bluetooth stack to drop the connection.
+                # timeout=30 gives the OBDLink time to respond over BT.
+                conn = obd.OBD(config.OBD_PORT, fast=False, timeout=30)
+
+                if conn.is_connected():
+                    self._connection = conn
+                    logger.info(
+                        f"OBD connection established — port: {config.OBD_PORT} "
+                        f"protocol: {conn.protocol_name()}"
+                    )
+                    return
+
+                # python-obd can return a connection object without raising
+                # an exception even when the connection failed — check explicitly.
+                conn.close()
+                raise ConnectionError("Connection object returned but is_connected() is False")
+
+            except Exception as e:
+                logger.warning(
+                    f"OBD connection attempt {attempt} failed: {e} — "
+                    f"retrying in {RETRY_INTERVAL_S}s"
+                )
+                time.sleep(RETRY_INTERVAL_S)
 
     def reconnect(self) -> None:
         """Re-establish connection after a mid-trip Bluetooth drop.
 
-        Increments reconnect_count so the health payload can surface
-        BT reliability issues on the Grafana dashboard.
+        Disconnects cleanly first to ensure the rfcomm socket is released,
+        then calls connect() which retries until the dongle responds.
+        Increments reconnect_count so the health payload surfaces BT
+        reliability issues on the Grafana dashboard.
         """
-        # TODO: Task 8 — disconnect cleanly, reconnect, increment reconnect_count
-        pass
+        logger.warning("OBD connection lost — attempting reconnect")
+        self.disconnect()
+        self.reconnect_count += 1
+        self.connect()
+        logger.info(f"OBD reconnected (total reconnects this session: {self.reconnect_count})")
 
     def disconnect(self) -> None:
-        """Close the OBD connection cleanly on shutdown."""
-        # TODO: Task 8 — close connection if open, log disconnect
-        pass
+        """Close the OBD connection cleanly on shutdown or before reconnect."""
+        if self._connection is not None:
+            try:
+                self._connection.close()
+                logger.info("OBD connection closed")
+            except Exception as e:
+                # Log but do not raise — disconnect is best-effort.
+                # The rfcomm socket will be released when the process exits.
+                logger.warning(f"Error closing OBD connection: {e}")
+            finally:
+                self._connection = None
 
     @property
     def is_connected(self) -> bool:
