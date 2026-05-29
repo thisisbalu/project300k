@@ -26,6 +26,7 @@ Note on obd.Async initialisation:
     using the same port and settings.
 """
 
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -84,7 +85,15 @@ class Collector:
         # not by wrapping an existing connection object.
         self._async_conn = obd.Async(config.OBD_PORT, fast=False, timeout=30)
 
+        # Track last-enqueue time per PID for interval enforcement.
+        # python-obd 0.7.3 does not support per-watcher polling intervals —
+        # all watched PIDs are polled at the async loop's natural rate (~1Hz).
+        # The time-filter in _make_callback() enforces the declared interval_s
+        # by skipping enqueue if insufficient time has elapsed since last write.
+        self._last_enqueue: dict[str, float] = {}
+
         for pid in ALL_PIDS:
+            self._last_enqueue[pid.command.name] = 0.0
             self._async_conn.watch(
                 pid.command,
                 callback=self._make_callback(pid),
@@ -92,7 +101,7 @@ class Collector:
                 # the PID as unsupported — some ECUs lie about supported PIDs.
                 force=True,
             )
-            logger.info(f"Watching PID: {pid.command.name} → {pid.table}.{pid.column}")
+            logger.info(f"Watching PID: {pid.command.name} → {pid.table}.{pid.column} every {pid.interval_s}s")
 
         # Trip detection watchers — feed TripManager with RPM and voltage
         # so it can detect trip start/end boundaries independently of data
@@ -144,6 +153,16 @@ class Collector:
             trip_id = self._trip_manager.current_trip_id
             if trip_id is None:
                 return
+
+            # Enforce polling interval — python-obd fires callbacks at the
+            # async loop rate (~1Hz) regardless of PID tier. Skip enqueue if
+            # less than interval_s has elapsed since this PID was last written.
+            # This implements the 1s/5s/30s tier architecture without needing
+            # multiple async connections.
+            now_mono = time.monotonic()
+            if now_mono - self._last_enqueue[pid.command.name] < pid.interval_s:
+                return
+            self._last_enqueue[pid.command.name] = now_mono
 
             # Extract raw magnitude — None if response has no value.
             # Storing None as NULL is intentional: a NULL spike for a specific
