@@ -22,6 +22,7 @@ Usage:
 """
 
 import queue
+import sqlite3
 import threading
 from typing import Any
 
@@ -38,7 +39,7 @@ class QueueWriter:
         _thread:      Daemon writer thread running _drain.
     """
 
-    def __init__(self, conn) -> None:
+    def __init__(self, conn: sqlite3.Connection) -> None:
         """Initialise the writer with an open SQLite connection.
 
         Args:
@@ -47,7 +48,9 @@ class QueueWriter:
         self._queue: queue.Queue = queue.Queue()
         self._conn = conn
         self._stop_event = threading.Event()
-        self._thread = threading.Thread(target=self._drain, daemon=True, name="queue-writer")
+        self._thread = threading.Thread(
+            target=self._drain, daemon=True, name="queue-writer"
+        )
 
     def start(self) -> None:
         """Start the background writer thread."""
@@ -78,9 +81,51 @@ class QueueWriter:
     def _drain(self) -> None:
         """Drain the queue and write rows to SQLite.
 
-        Runs on the dedicated writer thread. Processes rows one at a time.
-        On stop signal, continues draining until the queue is empty before
-        returning — ensures no rows are lost on clean shutdown.
+        Runs on the dedicated writer thread. Processes rows one at a time
+        using a 100ms timeout on each dequeue so the stop signal is checked
+        regularly without busy-waiting.
+
+        On stop signal, continues draining until the queue is fully empty
+        before returning — ensures no in-flight rows are lost on clean shutdown.
+
+        Write errors are logged and discarded rather than crashing the thread.
+        A single bad row must not stop all subsequent writes.
         """
-        # TODO: Task 6 — implement drain loop and SQLite writes
-        pass
+        while True:
+            # Check stop signal only after the queue is empty to ensure
+            # all enqueued rows are persisted before the thread exits.
+            if self._stop_event.is_set() and self._queue.empty():
+                break
+
+            try:
+                # Block for up to 100ms waiting for a row. The short timeout
+                # allows the stop condition above to be re-evaluated frequently
+                # without spinning the CPU at 100%.
+                table, row = self._queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+
+            try:
+                self._write(table, row)
+            except Exception as e:
+                # Log and discard — one bad row must not halt all subsequent writes.
+                logger.error(f"SQLite write error on table '{table}': {e} — row discarded")
+            finally:
+                self._queue.task_done()
+
+    def _write(self, table: str, row: dict[str, Any]) -> None:
+        """Build and execute a parameterised INSERT for one row.
+
+        Constructs the SQL dynamically from the row dict keys. Uses
+        named placeholders (:key) to safely bind values — no string
+        interpolation, no SQL injection risk.
+
+        Args:
+            table: Target SQLite table name.
+            row:   Dict of column name → value to insert.
+        """
+        columns = ", ".join(row.keys())
+        placeholders = ", ".join(f":{k}" for k in row.keys())
+        sql = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
+        self._conn.execute(sql, row)
+        self._conn.commit()

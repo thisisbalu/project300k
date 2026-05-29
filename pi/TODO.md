@@ -64,12 +64,12 @@
 
 ---
 
-## 6. Queue Writer (`queue_writer.py`)
-- [ ] Thread-safe `queue.Queue` instance
-- [ ] Main thread drain loop — dequeue and write to correct SQLite table
-- [ ] Handle SQLite write errors — log, do not crash
-- [ ] Expose `enqueue(table_name, row_dict)` used by all callbacks
-- [ ] Drain remaining queue before shutdown
+## 6. Queue Writer (`queue_writer.py`) ✓
+- [x] Thread-safe `queue.Queue` instance
+- [x] Main thread drain loop — dequeue and write to correct SQLite table
+- [x] Handle SQLite write errors — log, do not crash
+- [x] Expose `enqueue(table_name, row_dict)` used by all callbacks
+- [x] Drain remaining queue before shutdown
 
 ---
 
