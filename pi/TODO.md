@@ -123,11 +123,12 @@
 
 ---
 
-## 11. DTC Scanner (`trip.py`)
-- [ ] Run `GET_DTC` on trip start and trip end
-- [ ] Write each code to `dtc_events` (UUID, trip_id, timestamp, code, description, status)
-- [ ] Log each DTC: "DTC detected: {code} — {description}"
-- [ ] Log if clean: "DTC scan clean"
+## 11. DTC Scanner (`trip.py`) ✓
+- [x] Run `GET_DTC` on trip start and trip end
+- [x] Write each code to `dtc_events` (UUID, trip_id, timestamp, code, description, status)
+- [x] Log each DTC: "DTC detected: {code} — {description}"
+- [x] Log if clean: "DTC scan clean"
+- [x] Skip gracefully if OBD not connected — best-effort, non-fatal
 
 ---
 

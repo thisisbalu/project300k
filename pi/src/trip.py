@@ -174,9 +174,43 @@ class TripManager:
 
         Called at trip start and trip end. Uses Mode 03 (GET_DTC) which
         returns all stored fault codes from the PCM.
+
+        Each DTC is written as a separate row in dtc_events. If the scan
+        returns no codes, logs a clean confirmation. If the OBD connection
+        is not available, logs a warning and skips — DTC scan is best-effort.
         """
-        # TODO: Task 11 — run GET_DTC, write each code to dtc_events table
-        pass
+        if not self._obd_connection.is_connected:
+            logger.warning("DTC scan skipped — OBD not connected")
+            return
+
+        try:
+            response = self._obd_connection.connection.query(obd.commands.GET_DTC)
+
+            if response.is_null() or not response.value:
+                logger.info("DTC scan clean — no fault codes")
+                return
+
+            now = datetime.now(timezone.utc).isoformat()
+
+            for code, description in response.value:
+                row = {
+                    "id": str(uuid.uuid4()),
+                    "trip_id": self.current_trip_id,
+                    "timestamp": now,
+                    "code": code,
+                    "description": description,
+                    # DTCs from GET_DTC are stored codes — pending codes require
+                    # a separate Mode 07 query which is not implemented yet.
+                    "status": "stored",
+                    "synced": 0,
+                }
+                self._queue_writer.enqueue("dtc_events", row)
+                logger.warning(f"DTC detected: {code} — {description}")
+
+            logger.info(f"DTC scan complete — {len(response.value)} code(s) found")
+
+        except Exception as e:
+            logger.error(f"DTC scan failed: {e}")
 
     def _pause_polling(self) -> None:
         """Pause 1s and 5s polling tiers — engine is off or idling long."""
