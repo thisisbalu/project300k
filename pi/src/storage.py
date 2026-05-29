@@ -47,10 +47,34 @@ def get_connection() -> sqlite3.Connection:
     Returns:
         Configured sqlite3.Connection instance.
     """
-    conn = sqlite3.connect(config.DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(config.DB_PATH, check_same_thread=False, timeout=10)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+
+    # WAL mode is critical for power-cut safety — on abrupt power loss (engine off),
+    # SQLite replays the WAL file on next open and recovers in-flight transactions.
+    # FAT32 USB drives silently fall back to DELETE journal if WAL is unavailable —
+    # check the return value and warn loudly so the operator knows the risk.
+    mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+    if mode != "wal":
+        logger.warning(
+            f"WAL mode not available on this filesystem (got '{mode}') — "
+            "database is at risk of corruption on power cut. "
+            "Format the USB drive as ext4."
+        )
+    else:
+        logger.info("SQLite WAL mode active")
+
     conn.execute("PRAGMA foreign_keys=ON")
+
+    # NORMAL synchronous level is safe with WAL — WAL checkpoints are atomic
+    # even at NORMAL. Reduces fsync frequency compared to FULL, cutting USB
+    # write amplification significantly on flash storage.
+    conn.execute("PRAGMA synchronous=NORMAL")
+
+    # 8MB page cache reduces USB read traffic during sync script SELECT queries.
+    # Negative value = size in KiB (8000 KiB = ~8MB). Safe on Pi 3B's 1GB RAM.
+    conn.execute("PRAGMA cache_size=-8000")
+
     logger.info(f"SQLite connected: {config.DB_PATH}")
     return conn
 
