@@ -26,6 +26,8 @@ Note on obd.Async initialisation:
     using the same port and settings.
 """
 
+from __future__ import annotations
+
 import time
 import uuid
 from datetime import datetime, timezone

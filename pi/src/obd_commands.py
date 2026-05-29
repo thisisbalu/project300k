@@ -27,6 +27,8 @@ References:
     Mode 06:       SAE J1979 Mode 06, standardised misfire counters on CAN
 """
 
+from __future__ import annotations
+
 import obd
 from dataclasses import dataclass
 

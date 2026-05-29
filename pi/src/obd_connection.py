@@ -20,6 +20,8 @@ OBDLink MX+ dongle via /dev/rfcomm0. Handles:
       so the server can alert if BT reliability degrades over time.
 """
 
+from __future__ import annotations
+
 import time
 
 import obd

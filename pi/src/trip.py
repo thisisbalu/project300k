@@ -30,6 +30,8 @@ On Bluetooth drop mid-trip:
     trips on a BT glitch fragments trip-level analysis.
 """
 
+from __future__ import annotations
+
 import threading
 import time
 import uuid

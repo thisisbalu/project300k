@@ -25,6 +25,8 @@ survives across systemd restarts and Pi reboots. It is incremented on
 every boot of main.py before anything else runs.
 """
 
+from __future__ import annotations
+
 import os
 import time
 

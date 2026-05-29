@@ -231,5 +231,5 @@ def _sync_table(conn: sqlite3.Connection, table: str) -> int:
     return total_synced
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     run()

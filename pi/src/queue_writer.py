@@ -28,6 +28,8 @@ Usage:
     writer.stop()  # drains remaining rows before returning
 """
 
+from __future__ import annotations
+
 import queue
 import sqlite3
 import threading
