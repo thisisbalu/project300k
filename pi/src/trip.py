@@ -168,10 +168,10 @@ class TripManager:
         self._queue_writer.enqueue("trips", row)
         logger.info(f"Trip started: {self.current_trip_id}")
 
-        # Capture trip_id before releasing the lock — _scan_dtc runs outside
+        # Capture trip_id before releasing the lock — DTC scan runs outside
         # the lock so its duration does not block on_rpm/on_voltage callbacks.
         trip_id = self.current_trip_id
-        self._scan_dtc(trip_id, "trip_start")
+        self._dispatch_dtc_scan(trip_id, "trip_start")
 
     def _end_trip(self) -> None:
         """Close the current trip — write end_time, calculate duration, scan DTCs.
@@ -190,9 +190,29 @@ class TripManager:
         logger.info(f"Trip ended: {trip_id}")
         self.current_trip_id = None
 
-        # DTC scan after clearing trip_id — scan_trigger is "trip_end"
-        # and uses the captured trip_id, not the (now-None) current_trip_id.
-        self._scan_dtc(trip_id, "trip_end")
+        # DTC scan dispatched to a background thread — see _scan_dtc() note.
+        self._dispatch_dtc_scan(trip_id, "trip_end")
+
+    def _dispatch_dtc_scan(self, trip_id: str, scan_trigger: str) -> None:
+        """Dispatch a DTC scan to a background thread.
+
+        Calling query() synchronously from an on_rpm/on_voltage callback
+        (which fires on python-obd's polling thread) contends with the async
+        loop for the serial port, risking deadlock. Running the scan on a
+        separate daemon thread avoids this — the scan completes independently
+        without blocking the polling loop.
+
+        Args:
+            trip_id:      UUID of the trip this scan belongs to.
+            scan_trigger: "trip_start" or "trip_end".
+        """
+        t = threading.Thread(
+            target=self._scan_dtc,
+            args=(trip_id, scan_trigger),
+            daemon=True,
+            name=f"dtc-scan-{scan_trigger}",
+        )
+        t.start()
 
     def _scan_dtc(self, trip_id: str, scan_trigger: str) -> None:
         """Run a full DTC scan and persist any codes to dtc_events.
