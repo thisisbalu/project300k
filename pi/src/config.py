@@ -1,3 +1,24 @@
+"""
+config.py — Configuration loader for the OBD collector.
+
+Reads from /etc/obd-collector/config.env on startup. Any key=value pairs
+in that file are loaded into the environment before validation. Values can
+also be passed as plain environment variables (useful for testing).
+
+Required values (missing any causes immediate exit):
+    API_URL      — Golang sync endpoint on the home server
+    API_KEY      — Bearer token for sync API authentication
+    TAILSCALE_IP — Home server Tailscale IP, used for connectivity check before sync
+
+Optional values (defaults shown):
+    OBD_PORT         — /dev/rfcomm0
+    SYNC_BATCH_SIZE  — 500 rows per POST
+    DB_PATH          — /mnt/usb/data/obd.db
+    LOG_PATH         — /mnt/usb/logs/obd.log
+
+The module-level `config` instance is imported by all other modules.
+"""
+
 import os
 import sys
 from dataclasses import dataclass
@@ -8,6 +29,12 @@ CONFIG_PATH = "/etc/obd-collector/config.env"
 
 @dataclass
 class Config:
+    """Validated, typed configuration for the OBD collector.
+
+    Instantiated once at import time via _load(). All fields are read-only
+    after construction — no runtime mutation.
+    """
+
     API_URL: str
     API_KEY: str
     TAILSCALE_IP: str
@@ -17,6 +44,7 @@ class Config:
     LOG_PATH: str
 
     def __str__(self) -> str:
+        """Return a log-safe string with API_KEY masked."""
         return (
             f"API_URL={self.API_URL} "
             f"TAILSCALE_IP={self.TAILSCALE_IP} "
@@ -29,6 +57,23 @@ class Config:
 
 
 def _load() -> Config:
+    """Load and validate configuration.
+
+    Reads CONFIG_PATH line by line, populating os.environ for any
+    key=value pair not already set. Falls back gracefully if the file
+    is missing — allows environment-variable-only configuration for
+    testing without the config file present.
+
+    Collects all validation errors before exiting so the user sees
+    every problem in one run, not one at a time.
+
+    Returns:
+        Validated Config instance.
+
+    Exits:
+        sys.exit(1) if any required value is missing or SYNC_BATCH_SIZE
+        is not a positive integer.
+    """
     if os.path.exists(CONFIG_PATH):
         with open(CONFIG_PATH) as f:
             for line in f:
@@ -37,7 +82,10 @@ def _load() -> Config:
                     key, _, value = line.partition("=")
                     os.environ.setdefault(key.strip(), value.strip())
     else:
-        print(f"WARNING | Config file not found at {CONFIG_PATH}, relying on environment variables", file=sys.stderr)
+        print(
+            f"WARNING | Config file not found at {CONFIG_PATH}, relying on environment variables",
+            file=sys.stderr,
+        )
 
     errors = []
 
@@ -50,7 +98,9 @@ def _load() -> Config:
     try:
         batch_size = int(batch_size_raw)
         if batch_size <= 0:
-            errors.append(f"  SYNC_BATCH_SIZE must be a positive integer, got: {batch_size_raw}")
+            errors.append(
+                f"  SYNC_BATCH_SIZE must be a positive integer, got: {batch_size_raw}"
+            )
     except ValueError:
         errors.append(f"  SYNC_BATCH_SIZE must be an integer, got: {batch_size_raw}")
         batch_size = 500

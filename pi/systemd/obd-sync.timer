@@ -1,3 +1,16 @@
+# obd-sync.timer
+#
+# Fires obd-sync.service on a repeating schedule.
+#
+# OnBootSec=5min — first sync fires 5 minutes after boot. This delay
+#   gives the iPhone hotspot time to connect and Tailscale time to
+#   establish the VPN tunnel before the first sync attempt.
+#
+# OnUnitActiveSec=5min — subsequent syncs fire every 5 minutes after
+#   the previous sync service activation. If the Pi drives for an hour
+#   without hotspot, rows accumulate in SQLite and are batched up on
+#   the next successful sync.
+
 [Unit]
 Description=OBD Sync Timer — Project 300K
 

@@ -1,3 +1,21 @@
+# obd-collector.service
+#
+# Runs the OBD data collector as a persistent systemd service.
+# Starts after Bluetooth is available so rfcomm0 can be bound.
+#
+# Key settings:
+#   Type=notify      — main.py sends sd_notify READY=1 once init is complete.
+#                      systemd waits for this before declaring the service active.
+#   Restart=always   — restarts on any exit (crash, exception, clean exit).
+#   RestartSec=15    — waits 15s before restarting to avoid thrashing on
+#                      persistent errors (e.g. OBD dongle not found).
+#   StartLimitBurst=5 — if the service restarts 5 times within
+#   StartLimitIntervalSec=60s, systemd stops trying and marks it failed.
+#                      Prevents infinite crash loops from consuming resources.
+#   WatchdogSec=60   — if main.py does not send a watchdog ping within 60s,
+#                      systemd kills and restarts the service. Catches deadlocks
+#                      and infinite blocks that don't raise an exception.
+
 [Unit]
 Description=OBD Collector — Project 300K
 After=network.target bluetooth.target

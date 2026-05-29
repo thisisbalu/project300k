@@ -1,3 +1,17 @@
+# obd-sync.service
+#
+# One-shot service that runs the sync script once per invocation.
+# Triggered by obd-sync.timer — not started directly.
+#
+# Type=oneshot means systemd waits for the script to exit before
+# marking the service as done. The timer will not fire again until
+# the previous sync run has fully completed.
+#
+# Requires network-online.target so the sync script is not invoked
+# before the network interface is up. The sync script performs its
+# own two-step connectivity check (wlan0 IP + Tailscale ping) as a
+# second layer of validation before attempting any POST.
+
 [Unit]
 Description=OBD Sync — Project 300K
 After=network-online.target
