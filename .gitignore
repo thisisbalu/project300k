@@ -1,0 +1,28 @@
+# Claude Code
+.claude/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+*.egg
+
+# Golang
+backend/bin/
+backend/vendor/
+
+# Environment / secrets
+.env
+*.env
+config.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
