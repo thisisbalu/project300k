@@ -24,6 +24,7 @@ Shutdown (SIGTERM or KeyboardInterrupt):
 import sys
 import time
 
+import smbus2
 import health
 from collector import Collector
 from config import config
@@ -34,19 +35,52 @@ from storage import get_connection, init_schema
 from trip import TripManager
 
 
+# DS3231 I2C constants
+_DS3231_I2C_ADDRESS = 0x68   # fixed hardware address, not configurable
+_DS3231_STATUS_REG  = 0x0F   # status register contains the OSF flag
+_DS3231_OSF_BIT     = 0x80   # bit 7 of status register — Oscillator Stop Flag
+_I2C_BUS            = 1      # I2C bus 1 on Pi 3B (GPIO pins 2 and 3)
+
+
 def check_rtc() -> None:
     """Read the DS3231 RTC OSF flag and log a warning if the battery is dead.
 
     The OSF (Oscillator Stop Flag) is set by the DS3231 when power to the
     RTC was interrupted — indicating the coin cell battery is dead or missing.
-    When this happens, the RTC time is unreliable and fake-hwclock takes over
-    as the fallback clock source.
+    When OSF is set, the RTC time since last power loss is unreliable and
+    fake-hwclock takes over as the fallback clock source.
 
     Non-fatal — the collector continues regardless. The warning in the log
-    alerts the operator to replace the CR2032 coin cell.
+    alerts the operator to replace the CR2032 coin cell (every 3 years).
+
+    Two warning conditions:
+        OSF set     — chip found but battery lost power; timestamps may be wrong
+        OSError     — chip not responding on I2C bus (not wired or not enabled)
     """
-    # TODO: Task 4 — read DS3231 OSF flag via I2C, log WARNING if set or chip not found
-    pass
+    try:
+        bus = smbus2.SMBus(_I2C_BUS)
+        status = bus.read_byte_data(_DS3231_I2C_ADDRESS, _DS3231_STATUS_REG)
+        bus.close()
+
+        if status & _DS3231_OSF_BIT:
+            # OSF is set — RTC lost power at some point since last cleared.
+            # This typically means the CR2032 coin cell is dead or was never
+            # installed. fake-hwclock will provide an approximate time instead.
+            logger.warning(
+                "DS3231 OSF flag set — RTC battery may be dead, timestamp accuracy "
+                "not guaranteed. Replace CR2032 coin cell."
+            )
+        else:
+            logger.info("DS3231 RTC OK — OSF clear, clock is reliable")
+
+    except OSError:
+        # I2C address 0x68 did not respond — DS3231 not wired, not enabled
+        # in raspi-config, or I2C interface not loaded. fake-hwclock is the
+        # only clock source in this case.
+        logger.warning(
+            "DS3231 not found on I2C bus — check wiring and raspi-config I2C setting. "
+            "Relying on fake-hwclock for timestamps."
+        )
 
 
 def main() -> None:

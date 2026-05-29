@@ -37,11 +37,11 @@
 
 ---
 
-## 4. DS3231 RTC Check (`main.py`)
-- [ ] Read DS3231 OSF flag via I2C on boot
-- [ ] If OSF set → log WARNING: "RTC battery may be dead, timestamp accuracy not guaranteed"
-- [ ] If DS3231 not found → log WARNING: "DS3231 not found, relying on fake-hwclock"
-- [ ] Non-fatal — continue boot regardless
+## 4. DS3231 RTC Check (`main.py`) ✓
+- [x] Read DS3231 OSF flag via I2C on boot
+- [x] If OSF set → log WARNING: "RTC battery may be dead, timestamp accuracy not guaranteed"
+- [x] If DS3231 not found → log WARNING: "DS3231 not found, relying on fake-hwclock"
+- [x] Non-fatal — continue boot regardless
 
 ---
 
