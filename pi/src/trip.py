@@ -37,8 +37,9 @@ from datetime import datetime, timezone
 
 import obd
 
+from health import _read_collector_version
 from logger import logger
-from storage import update_trip_end
+from storage import get_trip_number, update_trip_end
 
 # Trip boundary thresholds
 VOLTAGE_ENGINE_RUNNING = 13.0  # V — alternator running above this
@@ -157,12 +158,15 @@ class TripManager:
         self.current_trip_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
 
+        trip_number = get_trip_number(self._queue_writer.conn)
         row = {
             "id": self.current_trip_id,
+            "trip_number": trip_number,
             "start_time": now,
             "end_time": None,
-            "distance_km": None,    # calculated post-sync in PostgreSQL
-            "duration_s": None,     # written at trip end
+            "distance_km": None,          # calculated post-sync in PostgreSQL
+            "duration_s": None,           # written at trip end
+            "collector_version": _read_collector_version(),
             "synced": 0,
         }
         self._queue_writer.enqueue("trips", row)

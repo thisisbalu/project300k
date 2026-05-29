@@ -89,14 +89,21 @@ def _read_cpu_temp() -> float | None:
 def _read_last_error() -> str | None:
     """Read the last ERROR line from the log file.
 
-    Scans the current log file in reverse to find the most recent ERROR
-    entry. Returns None if no error has been logged or log is unavailable.
+    Reads only the last 64KB of the log file rather than loading the entire
+    file (up to 5MB) into memory. On a Pi 3B with 1GB RAM, 5MB per sync
+    invocation is wasteful — 64KB is more than enough to find the last error.
+
+    Returns None if no error has been logged or log is unavailable.
     """
     try:
-        with open(config.LOG_PATH) as f:
-            lines = f.readlines()
-        # Scan from the end — most recent error is what matters.
-        for line in reversed(lines):
+        with open(config.LOG_PATH, "rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            # Read last 64KB — sufficient to find the most recent ERROR line
+            # without loading the full rotating log file into memory.
+            f.seek(max(0, size - 65536))
+            tail = f.read().decode("utf-8", errors="replace")
+        for line in reversed(tail.splitlines()):
             if "| ERROR" in line:
                 return line.strip()
     except OSError:
@@ -160,16 +167,22 @@ def collect(
     Returns:
         Dict with keys matching the pi_health_log table columns.
     """
-    mem  = psutil.virtual_memory()
-    disk = psutil.disk_usage(USB_MOUNT_PATH) if _check_usb_mounted() else None
+    mem        = psutil.virtual_memory()
+    usb_mounted = _check_usb_mounted()   # call once, reuse below
+    disk       = psutil.disk_usage(USB_MOUNT_PATH) if usb_mounted else None
+
+    # cpu_percent(interval=None) returns usage since last call — non-blocking.
+    # The first call ever returns 0.0 (no prior measurement), which is acceptable
+    # at boot. Subsequent calls return an accurate reading without blocking 1s.
+    cpu_usage = psutil.cpu_percent(interval=None)
 
     return {
         "cpu_temp_c":          _read_cpu_temp(),
-        "cpu_usage_pct":       psutil.cpu_percent(interval=1),
+        "cpu_usage_pct":       cpu_usage,
         "memory_free_mb":      round(mem.available / 1024 / 1024, 1),
         "disk_free_mb":        round(disk.free / 1024 / 1024, 1) if disk else None,
         "uptime_s":            _read_uptime(),
-        "usb_drive_mounted":   _check_usb_mounted(),
+        "usb_drive_mounted":   usb_mounted,
         "bt_adapter_present":  _check_bt_adapter(),
         "obd_reconnect_count": obd_reconnect_count,
         "restart_count":       restart_count,

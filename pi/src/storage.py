@@ -94,6 +94,29 @@ def init_schema(conn: sqlite3.Connection) -> None:
     logger.info(f"Schema initialised — version {SCHEMA_VERSION}")
 
 
+def get_trip_number(conn: sqlite3.Connection) -> int:
+    """Return the next sequential trip number.
+
+    Counts existing trips and returns count + 1. Called at trip start
+    to populate the human-friendly trip_number column.
+
+    This is safe because trips are only created one at a time (TripManager
+    holds _lock during _start_trip), so there is no concurrent-insert race.
+
+    Args:
+        conn: Active SQLite connection.
+
+    Returns:
+        Next trip number (1-based).
+    """
+    try:
+        row = conn.execute("SELECT COUNT(*) FROM trips").fetchone()
+        return (row[0] or 0) + 1
+    except sqlite3.Error as e:
+        logger.warning(f"Could not get trip number: {e} — defaulting to 0")
+        return 0
+
+
 def update_trip_end(conn: sqlite3.Connection, trip_id: str, end_time: str) -> None:
     """Write end_time and duration_s to an existing trips row.
 

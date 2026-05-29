@@ -141,8 +141,10 @@ def _write_health_snapshot(conn: sqlite3.Connection) -> None:
             cursor = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE synced=0")
             rows_pending += cursor.fetchone()[0]
         except sqlite3.OperationalError:
-            # Table may not exist yet if schema not initialised.
-            pass
+            # Table does not exist yet — Ford tables are added after FORScan
+            # confirms Mode 22 addresses. Skip silently at DEBUG level so it
+            # is visible in logs without being noisy in normal operation.
+            logger.debug(f"Table '{table}' does not exist yet — skipping count")
 
     metrics = health.collect(
         obd_reconnect_count=0,  # 0 when run standalone — collector tracks this
@@ -192,13 +194,13 @@ def _sync_table(conn: sqlite3.Connection, table: str) -> int:
             )
             rows = cursor.fetchall()
         except sqlite3.OperationalError:
-            # Table does not exist yet — skip silently.
+            # Table does not exist yet — Ford tables added after FORScan scan.
+            logger.debug(f"Table '{table}' does not exist yet — skipping sync")
             break
 
         if not rows:
             break
 
-        # Convert Row objects to plain dicts for JSON serialisation.
         payload = [dict(row) for row in rows]
         row_ids = [r["id"] for r in payload]
 

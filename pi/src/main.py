@@ -64,9 +64,11 @@ def check_rtc() -> int:
         0 if OSF is set or chip not found.
     """
     try:
-        bus = smbus2.SMBus(_I2C_BUS)
-        status = bus.read_byte_data(_DS3231_I2C_ADDRESS, _DS3231_STATUS_REG)
-        bus.close()
+        # Context manager guarantees bus.close() on any exit path —
+        # including if read_byte_data() raises, which would skip close()
+        # if the bus were opened manually.
+        with smbus2.SMBus(_I2C_BUS) as bus:
+            status = bus.read_byte_data(_DS3231_I2C_ADDRESS, _DS3231_STATUS_REG)
 
         if status & _DS3231_OSF_BIT:
             # OSF is set — RTC lost power at some point since last cleared.

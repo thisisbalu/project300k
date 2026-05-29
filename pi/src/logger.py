@@ -44,7 +44,15 @@ def _build_logger() -> logging.Logger:
     # on the first boot or if the drive is removed. Logging failure must
     # never crash the collector — it degrades to stderr only.
     try:
-        os.makedirs(os.path.dirname(config.LOG_PATH), exist_ok=True)
+        log_dir = os.path.dirname(config.LOG_PATH)
+        # Only create the log directory if the USB drive is mounted.
+        # Without this check, os.makedirs would silently create /mnt/usb/logs/
+        # on the SD card's root filesystem when the USB drive is not yet mounted,
+        # causing subsequent boots to write logs to the SD card instead of flagging
+        # the missing drive.
+        if not os.path.ismount("/mnt/usb"):
+            raise OSError("USB drive not mounted at /mnt/usb")
+        os.makedirs(log_dir, exist_ok=True)
         file_handler = RotatingFileHandler(
             filename=config.LOG_PATH,
             maxBytes=5 * 1024 * 1024,

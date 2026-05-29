@@ -76,6 +76,9 @@ class OBDConnection:
                 conn.close()
                 raise ConnectionError("Connection object returned but is_connected() is False")
 
+            except KeyboardInterrupt:
+                # Propagate shutdown signal — do not swallow it in the retry loop.
+                raise
             except Exception as e:
                 logger.warning(
                     f"OBD connection attempt {attempt} failed: {e} — "
