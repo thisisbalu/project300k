@@ -47,6 +47,10 @@ class QueueWriter:
         """
         self._queue: queue.Queue = queue.Queue()
         self._conn = conn
+        # Expose conn publicly so storage functions (e.g. update_trip_end)
+        # can issue direct UPDATE statements that cannot go through the
+        # INSERT-only queue path.
+        self.conn = conn
         self._stop_event = threading.Event()
         self._thread = threading.Thread(
             target=self._drain, daemon=True, name="queue-writer"

@@ -70,6 +70,35 @@ def init_schema(conn: sqlite3.Connection) -> None:
     logger.info(f"Schema initialised — version {SCHEMA_VERSION}")
 
 
+def update_trip_end(conn: sqlite3.Connection, trip_id: str, end_time: str) -> None:
+    """Write end_time and duration_s to an existing trips row.
+
+    Called by TripManager._end_trip() via a direct UPDATE rather than
+    going through QueueWriter INSERT, because the trips row already exists
+    (written at trip start) and cannot be re-inserted with the same UUID.
+
+    Args:
+        conn:     Active SQLite connection.
+        trip_id:  UUID of the trip to update.
+        end_time: ISO8601 UTC end timestamp.
+    """
+    try:
+        conn.execute(
+            """UPDATE trips
+               SET end_time = ?,
+                   duration_s = CAST(
+                       (julianday(?) - julianday(start_time)) * 86400 AS INTEGER
+                   ),
+                   synced = 0
+               WHERE id = ?""",
+            (end_time, end_time, trip_id)
+        )
+        conn.commit()
+        logger.info(f"Trip end written: {trip_id}")
+    except sqlite3.Error as e:
+        logger.error(f"Failed to write trip end for {trip_id}: {e}")
+
+
 def _create_tables(conn: sqlite3.Connection) -> None:
     """Create all tables if they do not already exist."""
 

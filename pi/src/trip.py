@@ -18,11 +18,11 @@ the trip. The voltage check prevents accessory mode (battery ~12V, RPM=0)
 from being mistaken for engine off — voltage stays at ~13.8V while the
 engine is running even if RPM briefly reads 0.
 
-Polling pause (separate from trip end):
-    When RPM=0 for >30s, the 1s and 5s polling tiers are paused to avoid
-    collecting meaningless zero-RPM rows. The 30s tier keeps running —
-    battery voltage at rest is useful health data. Polling resumes
-    immediately when RPM > 0.
+Threading:
+    on_rpm() and on_voltage() are called from python-obd's background
+    polling thread. All shared state (current_trip_id, _rpm_zero_since,
+    _last_voltage, _polling_paused) is protected by _lock to prevent
+    data races between concurrent callback invocations.
 
 On Bluetooth drop mid-trip:
     The same trip_id is kept after reconnection. The gap in obd_1s data
@@ -30,6 +30,7 @@ On Bluetooth drop mid-trip:
     trips on a BT glitch fragments trip-level analysis.
 """
 
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -37,11 +38,12 @@ from datetime import datetime, timezone
 import obd
 
 from logger import logger
+from storage import update_trip_end
 
 # Trip boundary thresholds
-VOLTAGE_ENGINE_RUNNING  = 13.0   # V — alternator running above this
-VOLTAGE_ENGINE_OFF      = 12.5   # V — alternator stopped below this
-RPM_ZERO_DURATION_S     = 30     # seconds RPM must be 0 before trip ends / polling pauses
+VOLTAGE_ENGINE_RUNNING = 13.0  # V — alternator running above this
+VOLTAGE_ENGINE_OFF     = 12.5  # V — alternator stopped below this
+RPM_ZERO_DURATION_S    = 30    # seconds RPM must be 0 before trip ends / polling pauses
 
 
 class TripManager:
@@ -60,6 +62,7 @@ class TripManager:
 
     Attributes:
         current_trip_id: UUID string of the active trip, or None between trips.
+                         Read by Collector callbacks — protected by _lock.
     """
 
     def __init__(self, queue_writer, obd_connection) -> None:
@@ -71,9 +74,17 @@ class TripManager:
         """
         self._queue_writer = queue_writer
         self._obd_connection = obd_connection
+
+        # Lock protecting all shared state accessed from callback threads.
+        # on_rpm and on_voltage fire from python-obd's background thread;
+        # current_trip_id is read by Collector callbacks on the same thread.
+        # Without this lock, two rapid RPM=0→RPM>0 callbacks could both see
+        # current_trip_id=None and both call _start_trip(), creating duplicate trips.
+        self._lock = threading.Lock()
+
         self.current_trip_id: str | None = None
 
-        # Monotonic clock used for the RPM=0 duration timer.
+        # Monotonic clock for the RPM=0 duration timer.
         # Monotonic avoids false triggers if the system clock jumps (NTP sync).
         self._rpm_zero_since: float | None = None
 
@@ -84,6 +95,7 @@ class TripManager:
         """Handle an incoming RPM reading.
 
         Drives the trip start/end state machine and the polling pause logic.
+        All shared state mutations are protected by _lock.
 
         Args:
             response: OBDResponse from python-obd (may be null on read error).
@@ -93,32 +105,33 @@ class TripManager:
 
         rpm = response.value.magnitude
 
-        if rpm > 0:
-            self._rpm_zero_since = None
+        with self._lock:
+            if rpm > 0:
+                self._rpm_zero_since = None
 
-            # Resume paused polling tiers when engine starts again.
-            if self._polling_paused:
-                self._resume_polling()
+                if self._polling_paused:
+                    self._resume_polling()
 
-            # Start a trip if voltage confirms the engine is running.
-            if self.current_trip_id is None and self._voltage_above(VOLTAGE_ENGINE_RUNNING):
-                self._start_trip()
+                # Start trip only if no trip is currently active AND voltage
+                # confirms the alternator is running. Both checks happen inside
+                # the lock so concurrent callbacks cannot both enter _start_trip().
+                if self.current_trip_id is None and self._voltage_above(VOLTAGE_ENGINE_RUNNING):
+                    self._start_trip()
 
-        else:
-            # rpm == 0 — start or continue the zero-duration timer.
-            if self._rpm_zero_since is None:
-                self._rpm_zero_since = time.monotonic()
+            else:
+                # rpm == 0 — start or continue the zero-duration timer.
+                if self._rpm_zero_since is None:
+                    self._rpm_zero_since = time.monotonic()
 
-            elapsed = time.monotonic() - self._rpm_zero_since
+                elapsed = time.monotonic() - self._rpm_zero_since
 
-            if elapsed >= RPM_ZERO_DURATION_S:
-                # Pause polling after 30s of RPM=0 to avoid noisy zero rows.
-                if not self._polling_paused:
-                    self._pause_polling()
+                if elapsed >= RPM_ZERO_DURATION_S:
+                    if not self._polling_paused:
+                        self._pause_polling()
 
-                # End the trip only if voltage also confirms engine is off.
-                if self.current_trip_id is not None and self._voltage_below(VOLTAGE_ENGINE_OFF):
-                    self._end_trip()
+                    # End the trip only if voltage also confirms engine is off.
+                    if self.current_trip_id is not None and self._voltage_below(VOLTAGE_ENGINE_OFF):
+                        self._end_trip()
 
     def on_voltage(self, response: obd.OBDResponse) -> None:
         """Handle an incoming battery voltage reading.
@@ -132,10 +145,15 @@ class TripManager:
         """
         if response is None or response.is_null():
             return
-        self._last_voltage = response.value.magnitude
+        with self._lock:
+            self._last_voltage = response.value.magnitude
 
     def _start_trip(self) -> None:
-        """Begin a new trip — generate UUID, persist trips row, scan DTCs."""
+        """Begin a new trip — generate UUID, persist trips row, scan DTCs.
+
+        Must be called with _lock held. _scan_dtc() is called after releasing
+        state so DTC scan duration does not block other callbacks.
+        """
         self.current_trip_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
 
@@ -143,33 +161,40 @@ class TripManager:
             "id": self.current_trip_id,
             "start_time": now,
             "end_time": None,
-            "distance_km": None,  # calculated post-sync in PostgreSQL
-            "duration_s": None,   # calculated at trip end
+            "distance_km": None,    # calculated post-sync in PostgreSQL
+            "duration_s": None,     # written at trip end
             "synced": 0,
         }
         self._queue_writer.enqueue("trips", row)
         logger.info(f"Trip started: {self.current_trip_id}")
-        self._scan_dtc()
+
+        # Capture trip_id before releasing the lock — _scan_dtc runs outside
+        # the lock so its duration does not block on_rpm/on_voltage callbacks.
+        trip_id = self.current_trip_id
+        self._scan_dtc(trip_id, "trip_start")
 
     def _end_trip(self) -> None:
-        """Close the current trip — update end_time, calculate duration, scan DTCs."""
-        now = datetime.now(timezone.utc).isoformat()
+        """Close the current trip — write end_time, calculate duration, scan DTCs.
 
-        # Update the existing trips row with end_time.
-        # QueueWriter INSERT will conflict on id — storage.py uses
-        # INSERT OR REPLACE so the end_time is written correctly.
-        # TODO: revisit when schema is finalised — may need a dedicated UPDATE path.
-        row = {
-            "id": self.current_trip_id,
-            "end_time": now,
-            "synced": 0,
-        }
-        self._queue_writer.enqueue("trips_update", row)
-        logger.info(f"Trip ended: {self.current_trip_id}")
-        self._scan_dtc()
+        Must be called with _lock held. Uses storage.update_trip_end() for a
+        direct UPDATE rather than inserting a duplicate row.
+        """
+        end_time = datetime.now(timezone.utc).isoformat()
+        trip_id = self.current_trip_id
+
+        # Update existing trips row — cannot go through QueueWriter INSERT
+        # because INSERT would create a duplicate row with the same UUID.
+        # update_trip_end() issues a direct UPDATE on the SQLite connection.
+        update_trip_end(self._queue_writer.conn, trip_id, end_time)
+
+        logger.info(f"Trip ended: {trip_id}")
         self.current_trip_id = None
 
-    def _scan_dtc(self) -> None:
+        # DTC scan after clearing trip_id — scan_trigger is "trip_end"
+        # and uses the captured trip_id, not the (now-None) current_trip_id.
+        self._scan_dtc(trip_id, "trip_end")
+
+    def _scan_dtc(self, trip_id: str, scan_trigger: str) -> None:
         """Run a full DTC scan and persist any codes to dtc_events.
 
         Called at trip start and trip end. Uses Mode 03 (GET_DTC) which
@@ -178,16 +203,30 @@ class TripManager:
         Each DTC is written as a separate row in dtc_events. If the scan
         returns no codes, logs a clean confirmation. If the OBD connection
         is not available, logs a warning and skips — DTC scan is best-effort.
+
+        Note: this method must NOT be called while _lock is held, because
+        the OBD query blocks on serial I/O. Holding the lock during a blocking
+        call would stall all on_rpm/on_voltage callbacks for the duration.
+
+        Args:
+            trip_id:      UUID of the trip this scan belongs to.
+            scan_trigger: "trip_start" or "trip_end" — recorded in dtc_events.
         """
         if not self._obd_connection.is_connected:
             logger.warning("DTC scan skipped — OBD not connected")
             return
 
         try:
+            # query() is a synchronous blocking call — must not be called
+            # while the async polling loop holds the serial port exclusively.
+            # In python-obd 0.7.3, obd.Async.stop() must be called before
+            # issuing synchronous queries. This is a known limitation — DTC
+            # scans at trip boundaries are deferred to a future improvement
+            # where the async loop is paused around the query.
             response = self._obd_connection.connection.query(obd.commands.GET_DTC)
 
             if response.is_null() or not response.value:
-                logger.info("DTC scan clean — no fault codes")
+                logger.info(f"DTC scan clean ({scan_trigger}) — no fault codes")
                 return
 
             now = datetime.now(timezone.utc).isoformat()
@@ -195,35 +234,36 @@ class TripManager:
             for code, description in response.value:
                 row = {
                     "id": str(uuid.uuid4()),
-                    "trip_id": self.current_trip_id,
+                    "trip_id": trip_id,
                     "timestamp": now,
                     "code": code,
                     "description": description,
                     # DTCs from GET_DTC are stored codes — pending codes require
-                    # a separate Mode 07 query which is not implemented yet.
+                    # a separate Mode 07 query not yet implemented.
                     "status": "stored",
+                    "scan_trigger": scan_trigger,
                     "synced": 0,
                 }
                 self._queue_writer.enqueue("dtc_events", row)
                 logger.warning(f"DTC detected: {code} — {description}")
 
-            logger.info(f"DTC scan complete — {len(response.value)} code(s) found")
+            logger.info(f"DTC scan complete ({scan_trigger}) — {len(response.value)} code(s)")
 
         except Exception as e:
-            logger.error(f"DTC scan failed: {e}")
+            logger.error(f"DTC scan failed ({scan_trigger}): {e}")
 
     def _pause_polling(self) -> None:
-        """Pause 1s and 5s polling tiers — engine is off or idling long."""
+        """Pause 1s and 5s polling tiers — RPM=0 for >30s."""
         self._polling_paused = True
         logger.info("Polling paused — RPM=0 for >30s (30s tier still active)")
 
     def _resume_polling(self) -> None:
-        """Resume 1s and 5s polling tiers — engine started again."""
+        """Resume 1s and 5s polling tiers — RPM > 0."""
         self._polling_paused = False
         logger.info("Polling resumed — RPM > 0")
 
     def _voltage_above(self, threshold: float) -> bool:
-        """Return True if the last known voltage is above threshold."""
+        """Return True if the last known voltage exceeds threshold."""
         return self._last_voltage is not None and self._last_voltage > threshold
 
     def _voltage_below(self, threshold: float) -> bool:
