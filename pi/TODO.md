@@ -101,16 +101,12 @@
 
 ---
 
-## 9. Async Collector (`collector.py`)
-- [ ] Set up `obd.Async` connection
-- [ ] Register standard PID watchers:
-  - 1s: RPM, speed, throttle, load
-  - 5s: coolant, oil temp, MAF, STFT, LTFT, O2 B1S1, O2 B1S2
-  - 30s: battery voltage, fuel level
-- [ ] Register Ford Mode 22 watchers:
-  - ford_obd_5s, ford_obd_10s, ford_obd_20s tiers
-- [ ] Each callback: build row dict (UUID, trip_id, timestamp, value) → enqueue
-- [ ] NULL enqueued if value is None
+## 9. Async Collector (`collector.py`) ✓
+- [x] Set up `obd.Async` connection
+- [x] Register all PIDs from ALL_PIDS in obd_commands.py — single loop
+- [x] Register RPM + voltage watchers for TripManager trip detection
+- [x] Each callback: build row dict (UUID, trip_id, timestamp, value) → enqueue
+- [x] NULL enqueued if value is None
 - [ ] Handle connection drop → trigger reconnect → log
 
 ---
