@@ -112,7 +112,10 @@ def main() -> None:
     obd_connection.connect()
 
     trip_manager = TripManager(queue_writer, obd_connection)
-    collector = Collector(obd_connection, queue_writer, trip_manager)
+    # Collector opens its own obd.Async connection — obd.Async is a subclass
+    # of obd.OBD and must be instantiated with a port string, not wrapped
+    # around the existing OBDConnection object.
+    collector = Collector(queue_writer, trip_manager)
     collector.start()
 
     # Notify systemd that initialisation is complete and the service is ready.
