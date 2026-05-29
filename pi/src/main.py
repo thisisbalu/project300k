@@ -21,6 +21,7 @@ Shutdown (SIGTERM or KeyboardInterrupt):
     before the SQLite connection is closed so no in-flight rows are lost.
 """
 
+import signal
 import sys
 import time
 
@@ -91,8 +92,25 @@ def check_rtc() -> int:
         return 0
 
 
+def _handle_sigterm(sig, frame) -> None:
+    """Convert SIGTERM to KeyboardInterrupt so the finally block runs.
+
+    Python only raises KeyboardInterrupt automatically on SIGINT (Ctrl-C).
+    SIGTERM (sent by systemd on 'systemctl stop') does not trigger it by
+    default — the process is killed abruptly, skipping the finally block
+    and leaving the queue undrained and the SQLite connection unclosed.
+    This handler converts SIGTERM to KeyboardInterrupt so the main loop's
+    try/finally always runs on both signals.
+    """
+    raise KeyboardInterrupt
+
+
 def main() -> None:
     """Bootstrap all components and run the main watchdog loop."""
+    # Register SIGTERM handler before anything else — systemd sends SIGTERM
+    # to stop the service and we must drain the queue and close SQLite cleanly.
+    signal.signal(signal.SIGTERM, _handle_sigterm)
+
     # Initialise sdnotify early — used for both READY and WATCHDOG signals.
     notifier = sdnotify.SystemdNotifier()
 
