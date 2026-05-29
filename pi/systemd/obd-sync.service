@@ -1,0 +1,12 @@
+[Unit]
+Description=OBD Sync — Project 300K
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pi
+WorkingDirectory=/home/pi/project300k/pi
+ExecStart=/home/pi/project300k/pi/venv/bin/python src/sync.py
+StandardOutput=journal
+StandardError=journal

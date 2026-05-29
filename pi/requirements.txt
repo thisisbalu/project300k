@@ -1,0 +1,5 @@
+python-obd==0.7.3
+requests==2.32.3
+psutil==6.1.1
+smbus2==0.4.3
+sdnotify==0.3.2

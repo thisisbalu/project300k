@@ -1,0 +1,10 @@
+[Unit]
+Description=OBD Sync Timer — Project 300K
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Unit=obd-sync.service
+
+[Install]
+WantedBy=timers.target

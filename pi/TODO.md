@@ -1,7 +1,7 @@
 # Pi Collector — Coding TODO
 
-## 1. Project Structure Setup
-- [ ] Create `pi/src/` folder with all modules:
+## 1. Project Structure Setup ✓
+- [x] Create `pi/src/` folder with all modules:
   - `main.py` — entry point, boot sequence, main loop
   - `config.py` — load and validate config from env file
   - `obd_connection.py` — OBD connection, reconnect logic
@@ -13,12 +13,12 @@
   - `health.py` — Pi health metrics collection
   - `sync.py` — network check, per-table batch sync to server
   - `logger.py` — rotating file logger, shared instance
-- [ ] Create `pi/systemd/` folder:
+- [x] Create `pi/systemd/` folder:
   - `obd-collector.service`
   - `obd-sync.service`
   - `obd-sync.timer`
-- [ ] Create `pi/scripts/install.sh` — venv setup, systemd install, service enable
-- [ ] Create `pi/requirements.txt` with pinned versions (python-obd==0.7.3, requests, psutil)
+- [x] Create `pi/scripts/install.sh` — venv setup, systemd install, service enable
+- [x] Create `pi/requirements.txt` with pinned versions (python-obd==0.7.3, requests, psutil)
 
 ---
 
