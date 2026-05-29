@@ -29,11 +29,11 @@
 
 ---
 
-## 3. Logging (`logger.py`)
-- [ ] Rotating file handler — 5MB × 7 files at LOG_PATH
-- [ ] Log format: `timestamp | level | message`
-- [ ] Single logger instance imported by all modules
-- [ ] Log on import: Pi boot message with timestamp and Python version
+## 3. Logging (`logger.py`) ✓
+- [x] Rotating file handler — 5MB × 7 files at LOG_PATH
+- [x] Log format: `timestamp | level | message`
+- [x] Single logger instance imported by all modules
+- [x] Log on import: Pi boot message with timestamp and Python version
 
 ---
 
