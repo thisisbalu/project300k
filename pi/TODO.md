@@ -74,7 +74,9 @@
 ---
 
 ## 7. OBD Commands (`obd_commands.py`)
-- [ ] Standard Mode 01 PID definitions (verify python-obd has all needed)
+- [x] Standard Mode 01 PID definitions — all verified in python-obd 0.7.3
+- [x] PIDConfig dataclass — carries command, table, column, interval_s
+- [x] ALL_PIDS flat list — single source of truth consumed by collector.py
 - [ ] Custom Mode 22 Ford OBDCommand objects (after FORScan confirmation):
   - `22F45C` — oil temp
   - `220318` — knock retard

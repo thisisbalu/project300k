@@ -1,79 +1,200 @@
 """
 obd_commands.py — OBD PID definitions for the Bronco Sport 2.0L EcoBoost.
 
-Organises all PIDs into polling tier groups consumed by collector.py.
-Standard Mode 01 PIDs come from the python-obd built-in command table.
-Ford Mode 22 enhanced PIDs require custom OBDCommand definitions and are
-only available via OBDLink MX+ (not generic ELM327 adapters).
+Defines all PIDs the collector polls, organised into polling tier groups.
+Each PID is wrapped in a PIDConfig that carries the OBD command, the target
+SQLite table, the column name, and the polling interval. This lets collector.py
+register all watchers with a single loop rather than hardcoding each one.
+
+Standard Mode 01 PIDs (SAE J1979) are fully defined here and ready to use.
+Ford Mode 22 enhanced PIDs are stubbed — populated after FORScan baseline
+scan confirms the hex addresses on this specific VIN.
 
 Polling tiers:
-    STANDARD_1S   — 1s interval: core engine state (RPM, speed, throttle, load)
-    STANDARD_5S   — 5s interval: thermals, air/fuel, O2 sensors
-    STANDARD_30S  — 30s interval: battery voltage, fuel level
+    STANDARD_1S   — 1s:  core engine state (RPM, speed, throttle, load)
+    STANDARD_5S   — 5s:  thermals, air/fuel, O2 sensors
+    STANDARD_30S  — 30s: battery voltage, fuel level
 
-    FORD_5S       — 5s interval: transmission data (Mode 22, TCM module)
-    FORD_10S      — 10s interval: boost and knock data (Mode 22, PCM module)
-    FORD_20S      — 20s interval: misfire counters, fuel rail (Mode 22 + Mode 06)
+    FORD_5S       — 5s (TBC):  transmission data (Mode 22, TCM module)
+    FORD_10S      — 10s (TBC): boost and knock (Mode 22, PCM module)
+    FORD_20S      — 20s (TBC): misfire counters, fuel rail (Mode 22 + Mode 06)
 
-Ford Mode 22 hex addresses confirmed via FORScan baseline scan on this VIN.
-Addresses sourced from FORScan community + f150ecoboost.net forums — same
-EcoBoost platform family. Verify all values during first live run.
+ALL_PIDS is a flat list of every active PIDConfig, consumed by collector.py.
 
 References:
     Standard PIDs: SAE J1979 Mode 01
-    Ford Mode 22:  Ford PCM/TCM proprietary, accessed via ISO 15765-4 CAN
+    Ford Mode 22:  Ford PCM/TCM proprietary, ISO 15765-4 CAN
     Mode 06:       SAE J1979 Mode 06, standardised misfire counters on CAN
 """
 
 import obd
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class PIDConfig:
+    """Binding between an OBD command and its SQLite destination.
+
+    Consumed by collector.py to register async watchers and route
+    callback values to the correct table and column.
+
+    Attributes:
+        command:     python-obd OBDCommand to watch.
+        table:       Target SQLite table (e.g. "obd_1s").
+        column:      Target column name (e.g. "rpm"). Must match the schema.
+        interval_s:  Polling interval in seconds.
+    """
+    command: obd.OBDCommand
+    table: str
+    column: str
+    interval_s: int
 
 
 # ---------------------------------------------------------------------------
-# Standard OBD-II Mode 01 — built into python-obd
+# Standard OBD-II Mode 01 — SAE J1979, supported by every OBD-II vehicle.
+# All commands are built into python-obd 0.7.3 — no custom definitions needed.
 # ---------------------------------------------------------------------------
 
-STANDARD_1S = [
-    obd.commands.RPM,           # Engine RPM — core health signal, idle drift = wear
-    obd.commands.SPEED,         # Vehicle speed km/h — trip context
-    obd.commands.THROTTLE_POS,  # Throttle position % — driver input
-    obd.commands.ENGINE_LOAD,   # Calculated engine load % — how hard engine is working
+STANDARD_1S: list[PIDConfig] = [
+    PIDConfig(
+        command=obd.commands.RPM,
+        table="obd_1s",
+        column="rpm",
+        interval_s=1,
+        # Core health signal — idle RPM drift over thousands of km indicates
+        # engine wear (valves, rings). High-frequency capture is essential.
+    ),
+    PIDConfig(
+        command=obd.commands.SPEED,
+        table="obd_1s",
+        column="speed_kmh",
+        interval_s=1,
+    ),
+    PIDConfig(
+        command=obd.commands.THROTTLE_POS,
+        table="obd_1s",
+        column="throttle_pct",
+        interval_s=1,
+    ),
+    PIDConfig(
+        command=obd.commands.ENGINE_LOAD,
+        table="obd_1s",
+        column="load_pct",
+        interval_s=1,
+    ),
 ]
 
-STANDARD_5S = [
-    obd.commands.COOLANT_TEMP,       # Engine coolant temperature °C — overheating, thermostat
-    obd.commands.OIL_TEMP,           # Engine oil temperature °C — wear risk at high temp
-    obd.commands.MAF,                # Mass air flow g/s — air intake health
-    obd.commands.SHORT_FUEL_TRIM_1,  # Short term fuel trim % — real-time injector/O2 correction
-    obd.commands.LONG_FUEL_TRIM_1,   # Long term fuel trim % — persistent correction, vacuum leak
-    obd.commands.O2_B1S1,            # O2 sensor Bank1 Sensor1 V — pre-cat, combustion quality
-    obd.commands.O2_B1S2,            # O2 sensor Bank1 Sensor2 V — post-cat, catalyst health
+STANDARD_5S: list[PIDConfig] = [
+    PIDConfig(
+        command=obd.commands.COOLANT_TEMP,
+        table="obd_5s",
+        column="coolant_temp_c",
+        interval_s=5,
+        # Gradual upward trend over weeks = early thermostat or coolant leak sign.
+        # Sudden spike = immediate stop-driving condition (>105°C alert threshold).
+    ),
+    PIDConfig(
+        command=obd.commands.OIL_TEMP,
+        table="obd_5s",
+        column="oil_temp_c",
+        interval_s=5,
+        # PID 0x5C — standardised in OBD-II since 2008. Oil running consistently
+        # above 130°C accelerates oxidation and viscosity breakdown.
+    ),
+    PIDConfig(
+        command=obd.commands.MAF,
+        table="obd_5s",
+        column="maf_gs",
+        interval_s=5,
+    ),
+    PIDConfig(
+        command=obd.commands.SHORT_FUEL_TRIM_1,
+        table="obd_5s",
+        column="stft_pct",
+        interval_s=5,
+        # Real-time ECU correction to the injector pulse. Values outside ±10%
+        # indicate an active fuelling problem (O2 sensor, vacuum leak, injector).
+    ),
+    PIDConfig(
+        command=obd.commands.LONG_FUEL_TRIM_1,
+        table="obd_5s",
+        column="ltft_pct",
+        interval_s=5,
+        # Learned correction applied permanently. LTFT drifting beyond ±10%
+        # and staying there is a strong diagnostic signal — alert threshold.
+    ),
+    PIDConfig(
+        command=obd.commands.O2_B1S1,
+        table="obd_5s",
+        column="o2_b1s1_v",
+        interval_s=5,
+        # Pre-catalyst O2 sensor. Should oscillate 0.1–0.9V in closed loop.
+        # Flatline = dead sensor. Stuck high/low = rich/lean condition.
+    ),
+    PIDConfig(
+        command=obd.commands.O2_B1S2,
+        table="obd_5s",
+        column="o2_b1s2_v",
+        interval_s=5,
+        # Post-catalyst O2 sensor. Should read stable ~0.6–0.7V if catalyst
+        # is healthy. Oscillating like B1S1 = catalyst efficiency loss.
+    ),
 ]
 
-STANDARD_30S = [
-    obd.commands.CONTROL_MODULE_VOLTAGE,  # Battery/alternator voltage V — charging system health
-    obd.commands.FUEL_LEVEL,              # Fuel level % — trip context, consumption tracking
+STANDARD_30S: list[PIDConfig] = [
+    PIDConfig(
+        command=obd.commands.CONTROL_MODULE_VOLTAGE,
+        table="obd_30s",
+        column="battery_v",
+        interval_s=30,
+        # Engine running: 13.8–14.4V = healthy alternator.
+        # <12.0V running = alternator failing (critical alert).
+        # >15.0V running = alternator overcharging (critical alert).
+        # Engine off: resting voltage shows battery state of charge.
+    ),
+    PIDConfig(
+        command=obd.commands.FUEL_LEVEL,
+        table="obd_30s",
+        column="fuel_level_pct",
+        interval_s=30,
+    ),
 ]
 
 
 # ---------------------------------------------------------------------------
-# Ford Mode 22 Enhanced PIDs — requires OBDLink MX+
-# Populated after FORScan baseline scan confirms addresses on this VIN.
+# Ford Mode 22 Enhanced PIDs — requires OBDLink MX+ (not generic ELM327).
+# Stubbed until FORScan baseline scan confirms hex addresses on this VIN.
 # ---------------------------------------------------------------------------
 
-# TCM module — transmission data (5s interval)
-# Expected PIDs: trans_temp_c (221E1C), trans_gear (221E12), tcc_ratio (221E15)
-FORD_5S = []  # TODO: Task 7 — add OBDCommand objects after FORScan confirmation
+# TCM module — transmission data
+# Expected: trans_temp_c (221E1C), trans_gear (221E12), tcc_ratio (221E15)
+FORD_5S: list[PIDConfig] = []
+# TODO: Task 7 (Part 2) — define after FORScan scan confirms TCM PID addresses
 
-# PCM module — boost and knock data (10s interval)
-# Expected PIDs: knock_retard_deg (220318), boost_desired_psi (22033E),
-#                boost_actual_psi (22D137), wastegate_pct (2203CA)
-FORD_10S = []  # TODO: Task 7 — add OBDCommand objects after FORScan confirmation
+# PCM module — turbo and knock data
+# Expected: knock_retard_deg (220318), boost_desired_psi (22033E),
+#           boost_actual_psi (22D137), wastegate_pct (2203CA)
+FORD_10S: list[PIDConfig] = []
+# TODO: Task 7 (Part 2) — define after FORScan scan confirms PCM PID addresses
 
-# PCM module + Mode 06 — misfire counters and fuel rail (20s interval)
-# Expected PIDs: misfire_cyl1-4 (Mode 06: 06A20C-06A50C),
-#                fuel_rail_pressure_psi (Mode 22: address TBD from FORScan)
-FORD_20S = []  # TODO: Task 7 — add OBDCommand objects after FORScan confirmation
+# PCM module + Mode 06 — misfire counters and fuel rail pressure
+# Expected: misfire_cyl1-4 (Mode 06: 06A20C-06A50C),
+#           fuel_rail_pressure_psi (Mode 22: address TBD from FORScan)
+FORD_20S: list[PIDConfig] = []
+# TODO: Task 7 (Part 2) — define after FORScan scan confirms misfire + fuel rail addresses
 
-# Mode 06 misfire counters — SAE-standardised on CAN, preferred over Mode 22 path
-# Pattern: 06A[2-5]0C where A2=Cyl1, A3=Cyl2, A4=Cyl3, A5=Cyl4
-MODE06_MISFIRE = []  # TODO: Task 7 — define Mode 06 OBDCommand objects
+
+# ---------------------------------------------------------------------------
+# ALL_PIDS — flat list of every active PIDConfig consumed by collector.py.
+# Ford lists are empty until FORScan confirms addresses — adding them here
+# means collector.py requires no changes when Ford PIDs are enabled.
+# ---------------------------------------------------------------------------
+
+ALL_PIDS: list[PIDConfig] = [
+    *STANDARD_1S,
+    *STANDARD_5S,
+    *STANDARD_30S,
+    *FORD_5S,
+    *FORD_10S,
+    *FORD_20S,
+]
