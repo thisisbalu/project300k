@@ -43,7 +43,7 @@ _DS3231_OSF_BIT     = 0x80   # bit 7 of status register — Oscillator Stop Flag
 _I2C_BUS            = 1      # I2C bus 1 on Pi 3B (GPIO pins 2 and 3)
 
 
-def check_rtc() -> None:
+def check_rtc() -> int:
     """Read the DS3231 RTC OSF flag and log a warning if the battery is dead.
 
     The OSF (Oscillator Stop Flag) is set by the DS3231 when power to the
@@ -57,6 +57,10 @@ def check_rtc() -> None:
     Two warning conditions:
         OSF set     — chip found but battery lost power; timestamps may be wrong
         OSError     — chip not responding on I2C bus (not wired or not enabled)
+
+    Returns:
+        1 if DS3231 is present and OSF is clear (clock reliable).
+        0 if OSF is set or chip not found.
     """
     try:
         bus = smbus2.SMBus(_I2C_BUS)
@@ -71,8 +75,10 @@ def check_rtc() -> None:
                 "DS3231 OSF flag set — RTC battery may be dead, timestamp accuracy "
                 "not guaranteed. Replace CR2032 coin cell."
             )
-        else:
-            logger.info("DS3231 RTC OK — OSF clear, clock is reliable")
+            return 0
+
+        logger.info("DS3231 RTC OK — OSF clear, clock is reliable")
+        return 1
 
     except OSError:
         # I2C address 0x68 did not respond — DS3231 not wired, not enabled
@@ -82,6 +88,7 @@ def check_rtc() -> None:
             "DS3231 not found on I2C bus — check wiring and raspi-config I2C setting. "
             "Relying on fake-hwclock for timestamps."
         )
+        return 0
 
 
 def main() -> None:
@@ -92,7 +99,7 @@ def main() -> None:
     logger.info("Starting obd-collector")
     logger.info(f"Config loaded: {config}")
 
-    check_rtc()
+    rtc_ok = check_rtc()
     restart_count = health.increment_restart_count()
 
     conn = get_connection()

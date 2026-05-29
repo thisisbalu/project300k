@@ -7,12 +7,18 @@ temp, frequent OBD reconnects) without needing to SSH into the car.
 
 Metrics collected:
     cpu_temp_c          — CPU temperature from kernel thermal interface
+    cpu_usage_pct       — CPU utilisation percentage
     memory_free_mb      — Available RAM (includes reclaimable cache)
     disk_free_mb        — Free space on /mnt/usb (the data drive)
+    uptime_s            — Seconds since last Pi boot
+    usb_drive_mounted   — 1 if /mnt/usb is accessible, 0 if not
+    bt_adapter_present  — 1 if hci0 (USB BT dongle) is detected, 0 if not
     obd_reconnect_count — Mid-trip BT reconnections since last boot
     restart_count       — Total collector script restarts (persistent file)
+    rtc_ok              — 1 if DS3231 OSF clear and chip found, 0 otherwise
     last_error          — Last ERROR line from the log file
-    rows_collected      — Rows written to SQLite since last sync
+    rows_collected      — Unsynced rows at snapshot time
+    collector_version   — Python collector version string
 
 restart_count is stored in a plain text file on the USB drive so it
 survives across systemd restarts and Pi reboots. It is incremented on
@@ -20,6 +26,7 @@ every boot of main.py before anything else runs.
 """
 
 import os
+import time
 
 import psutil
 
@@ -28,7 +35,10 @@ from logger import logger
 
 
 RESTART_COUNT_PATH = "/mnt/usb/data/restart_count"
-CPU_TEMP_PATH = "/sys/class/thermal/thermal_zone0/temp"
+CPU_TEMP_PATH      = "/sys/class/thermal/thermal_zone0/temp"
+USB_MOUNT_PATH     = "/mnt/usb"
+BT_ADAPTER_PATH    = "/sys/class/bluetooth/hci0"
+VERSION_PATH       = "/home/pi/project300k/pi/VERSION"
 
 
 def increment_restart_count() -> int:
@@ -94,24 +104,76 @@ def _read_last_error() -> str | None:
     return None
 
 
-def collect(obd_reconnect_count: int, restart_count: int) -> dict:
-    """Collect a Pi health snapshot for the sync payload.
+def _read_collector_version() -> str:
+    """Read the collector version string from the VERSION file.
+
+    Returns 'unknown' if the file is missing — version file is created
+    as part of the release process.
+    """
+    try:
+        with open(VERSION_PATH) as f:
+            return f.read().strip()
+    except OSError:
+        return "unknown"
+
+
+def _check_usb_mounted() -> int:
+    """Check if the USB flash drive is mounted and accessible.
+
+    Returns 1 if /mnt/usb is a mount point, 0 otherwise.
+    A 0 here means SQLite data is not being written to the drive.
+    """
+    return 1 if os.path.ismount(USB_MOUNT_PATH) else 0
+
+
+def _check_bt_adapter() -> int:
+    """Check if the USB Bluetooth adapter (hci0) is present.
+
+    Returns 1 if the sysfs path for hci0 exists, 0 otherwise.
+    A 0 here means the USB BT dongle is missing or not recognised —
+    OBD connection will fail until it is detected.
+    """
+    return 1 if os.path.exists(BT_ADAPTER_PATH) else 0
+
+
+def _read_uptime() -> int:
+    """Return seconds since the Pi last booted.
+
+    Uses psutil.boot_time() which reads from /proc/uptime internally.
+    """
+    return int(time.time() - psutil.boot_time())
+
+
+def collect(
+    obd_reconnect_count: int,
+    restart_count: int,
+    rtc_ok: int = 1,
+) -> dict:
+    """Collect a full Pi health snapshot for the sync payload.
 
     Args:
         obd_reconnect_count: From OBDConnection.reconnect_count.
         restart_count:       Current value from increment_restart_count().
+        rtc_ok:              1 if DS3231 OSF clear and chip found, 0 otherwise.
+                             Passed in from check_rtc() in main.py.
 
     Returns:
         Dict with keys matching the pi_health_log table columns.
     """
-    mem = psutil.virtual_memory()
-    disk = psutil.disk_usage("/mnt/usb")
+    mem  = psutil.virtual_memory()
+    disk = psutil.disk_usage(USB_MOUNT_PATH) if _check_usb_mounted() else None
 
     return {
-        "cpu_temp_c": _read_cpu_temp(),
-        "memory_free_mb": round(mem.available / 1024 / 1024, 1),
-        "disk_free_mb": round(disk.free / 1024 / 1024, 1),
+        "cpu_temp_c":          _read_cpu_temp(),
+        "cpu_usage_pct":       psutil.cpu_percent(interval=1),
+        "memory_free_mb":      round(mem.available / 1024 / 1024, 1),
+        "disk_free_mb":        round(disk.free / 1024 / 1024, 1) if disk else None,
+        "uptime_s":            _read_uptime(),
+        "usb_drive_mounted":   _check_usb_mounted(),
+        "bt_adapter_present":  _check_bt_adapter(),
         "obd_reconnect_count": obd_reconnect_count,
-        "restart_count": restart_count,
-        "last_error": _read_last_error(),
+        "restart_count":       restart_count,
+        "rtc_ok":              rtc_ok,
+        "last_error":          _read_last_error(),
+        "collector_version":   _read_collector_version(),
     }
