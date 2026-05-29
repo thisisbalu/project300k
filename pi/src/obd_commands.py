@@ -139,6 +139,38 @@ STANDARD_5S: list[PIDConfig] = [
         # Post-catalyst O2 sensor. Should read stable ~0.6–0.7V if catalyst
         # is healthy. Oscillating like B1S1 = catalyst efficiency loss.
     ),
+    PIDConfig(
+        command=obd.commands.INTAKE_TEMP,
+        table="obd_5s",
+        column="intake_air_temp_c",
+        interval_s=5,
+        # Hot intake air reduces charge density and power. Also provides
+        # context for fuel trim readings — high IAT can cause lean corrections.
+    ),
+    PIDConfig(
+        command=obd.commands.INTAKE_PRESSURE,
+        table="obd_5s",
+        column="map_kpa",
+        interval_s=5,
+        # Manifold Absolute Pressure. map_kpa - baro_pressure_kpa = calculated
+        # boost pressure — useful before Ford Mode 22 boost PIDs are confirmed.
+    ),
+    PIDConfig(
+        command=obd.commands.BAROMETRIC_PRESSURE,
+        table="obd_5s",
+        column="baro_pressure_kpa",
+        interval_s=5,
+        # Ambient barometric pressure. Required to calculate true boost from MAP.
+        # Also provides altitude context for fuel trim analysis.
+    ),
+    PIDConfig(
+        command=obd.commands.TIMING_ADVANCE,
+        table="obd_5s",
+        column="timing_advance_deg",
+        interval_s=5,
+        # Ignition timing advance in degrees. Context for knock retard readings
+        # in ford_obd_10s — shows how aggressively ECU is advancing timing.
+    ),
 ]
 
 STANDARD_30S: list[PIDConfig] = [
