@@ -143,19 +143,14 @@
 
 ---
 
-## 13. Sync Script (`sync.py`)
-- [ ] Step 1 — Network check:
-  - Check wlan0 has IP → log "Sync skipped — no hotspot" if not
-  - Ping TAILSCALE_IP → log "Sync skipped — server unreachable" if fail
-- [ ] Step 2 — Collect and write Pi health snapshot
-- [ ] Step 3 — Per-table sync in priority order:
-  - `obd_1s` → `obd_5s` → `obd_30s` → `ford_obd_5s` → `ford_obd_10s` → `ford_obd_20s` → `dtc_events` → `pi_health_log` → `trips`
-  - Read batch of SYNC_BATCH_SIZE rows WHERE synced=0
-  - POST to API_URL with Authorization: Bearer {API_KEY}
-  - On HTTP 200 → mark rows synced=1
-  - On failure → log error, stop table, move to next
-  - Repeat until no unsynced rows
-- [ ] Step 4 — Log sync summary: "Sync complete — {rows} rows across {tables} tables"
+## 13. Sync Script (`sync.py`) ✓
+- [x] Step 1 — Network check: wlan0 IP + Tailscale ping, distinct log per failure
+- [x] Step 2 — Collect Pi health snapshot + count pending rows before sync
+- [x] Step 3 — Per-table batch sync in priority order
+- [x] Batch read WHERE synced=0, POST with Bearer auth, mark synced=1 on HTTP 200
+- [x] On failure — log error, stop table, move to next (partial sync is better than none)
+- [x] Bulk UPDATE synced=1 with IN clause — one UPDATE per batch not per row
+- [x] Step 4 — Summary log
 
 ---
 
