@@ -182,13 +182,30 @@ STANDARD_30S: list[PIDConfig] = [
         # Engine running: 13.8–14.4V = healthy alternator.
         # <12.0V running = alternator failing (critical alert).
         # >15.0V running = alternator overcharging (critical alert).
-        # Engine off: resting voltage shows battery state of charge.
     ),
     PIDConfig(
         command=obd.commands.FUEL_LEVEL,
         table="obd_30s",
         column="fuel_level_pct",
         interval_s=30,
+    ),
+    PIDConfig(
+        command=obd.commands.AMBIANT_AIR_TEMP,
+        table="obd_30s",
+        column="ambient_air_temp_c",
+        interval_s=30,
+        # Outside air temperature. Provides context for cold start behaviour,
+        # seasonal thermal trends, and correlating engine wear with temperature
+        # across the 300K km dataset.
+    ),
+    PIDConfig(
+        command=obd.commands.DISTANCE_W_MIL,
+        table="obd_30s",
+        column="distance_since_dtc_cleared_km",
+        interval_s=30,
+        # Distance travelled since DTCs were last cleared. Useful alongside
+        # dtc_events to understand how long a fault has been present or how
+        # long the vehicle has run cleanly since the last fault was resolved.
     ),
 ]
 
