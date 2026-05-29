@@ -154,26 +154,19 @@
 
 ---
 
-## 14. systemd Services (`systemd/`)
-- [ ] `obd-collector.service`:
-  - Restart=always, RestartSec=15
-  - StartLimitBurst=5, StartLimitIntervalSec=60
-  - WatchdogSec=60
-  - After=bluetooth.target
-- [ ] `obd-sync.service`: Type=oneshot
-- [ ] `obd-sync.timer`: OnBootSec=5min, OnUnitActiveSec=5min
-- [ ] `scripts/install.sh`:
-  - Create venv at `pi/venv/`
-  - Install requirements
-  - Copy systemd files to `/etc/systemd/system/`
-  - Enable and start services
+## 14. systemd Services (`systemd/`) ✓
+- [x] `obd-collector.service` — Restart=always, RestartSec=15, StartLimitBurst=5, WatchdogSec=60, After=bluetooth.target
+- [x] `obd-sync.service` — Type=oneshot
+- [x] `obd-sync.timer` — OnBootSec=5min, OnUnitActiveSec=5min
+- [x] `scripts/install.sh` — venv setup, requirements install, systemd copy + enable
 
 ---
 
-## 15. Watchdog Integration (`main.py`)
-- [ ] Send `WATCHDOG=1` ping every 30s from main loop
-- [ ] Log "Watchdog ping sent" on each ping
-- [ ] Main loop stall → systemd restarts service automatically
+## 15. Watchdog Integration (`main.py`) ✓
+- [x] Send `WATCHDOG=1` ping every 30s from main loop
+- [x] Send `READY=1` after all components initialised (Type=notify in service file)
+- [x] Log "Watchdog ping sent" on each ping
+- [x] Main loop stall → systemd kills and restarts after WatchdogSec=60s
 
 ---
 

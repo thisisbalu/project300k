@@ -24,6 +24,7 @@ Shutdown (SIGTERM or KeyboardInterrupt):
 import sys
 import time
 
+import sdnotify
 import smbus2
 import health
 from collector import Collector
@@ -85,11 +86,14 @@ def check_rtc() -> None:
 
 def main() -> None:
     """Bootstrap all components and run the main watchdog loop."""
+    # Initialise sdnotify early — used for both READY and WATCHDOG signals.
+    notifier = sdnotify.SystemdNotifier()
+
     logger.info("Starting obd-collector")
     logger.info(f"Config loaded: {config}")
 
     check_rtc()
-    health.increment_restart_count()
+    restart_count = health.increment_restart_count()
 
     conn = get_connection()
     init_schema(conn)
@@ -104,12 +108,21 @@ def main() -> None:
     collector = Collector(obd_connection, queue_writer, trip_manager)
     collector.start()
 
-    # Main loop — pings systemd watchdog every 30s.
-    # If this loop stalls (deadlock, infinite block), the watchdog times out
-    # after WatchdogSec=60s and systemd restarts the service automatically.
-    # TODO: Task 15 — add sdnotify watchdog ping
+    # Notify systemd that initialisation is complete and the service is ready.
+    # Required because obd-collector.service uses Type=notify — systemd waits
+    # for this signal before marking the service as active or starting dependents.
+    notifier.notify("READY=1")
+    logger.info("obd-collector ready")
+
+    # Main watchdog loop — pings systemd every 30s.
+    # WatchdogSec=60s in the service file — if no ping arrives within 60s,
+    # systemd kills and restarts the service. The 30s ping interval gives
+    # a 2x safety margin so a single delayed iteration never triggers a restart.
+    # If this loop stalls (deadlock, hung thread), the watchdog fires correctly.
     try:
         while True:
+            notifier.notify("WATCHDOG=1")
+            logger.info("Watchdog ping sent")
             time.sleep(30)
     except KeyboardInterrupt:
         logger.info("Shutting down — draining queue")
