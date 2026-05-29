@@ -132,15 +132,14 @@
 
 ---
 
-## 12. Pi Health Metrics (`health.py`)
-- [ ] CPU temp: `/sys/class/thermal/thermal_zone0/temp`
-- [ ] Memory free: `psutil.virtual_memory().available`
-- [ ] Disk free: `psutil.disk_usage('/mnt/usb').free`
-- [ ] OBD reconnect count: from `obd_connection.py`
-- [ ] Restart count: persistent counter at `/mnt/usb/data/restart_count` — increment on every boot
-- [ ] Last error: last ERROR log line
-- [ ] Rows collected since last sync: count from SQLite
-- [ ] Write snapshot to `pi_health_log`
+## 12. Pi Health Metrics (`health.py`) ✓
+- [x] CPU temp: `/sys/class/thermal/thermal_zone0/temp`
+- [x] Memory free: `psutil.virtual_memory().available`
+- [x] Disk free: `psutil.disk_usage('/mnt/usb').free`
+- [x] OBD reconnect count: passed in from OBDConnection
+- [x] Restart count: persistent counter at `/mnt/usb/data/restart_count` — increment on every boot
+- [x] Last error: last ERROR line scanned from log file
+- [ ] Rows collected since last sync — deferred to Task 13 (sync script has the context)
 
 ---
 
