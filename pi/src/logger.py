@@ -77,7 +77,9 @@ def _build_logger() -> logging.Logger:
     console_handler.setFormatter(formatter)
     log.addHandler(console_handler)
 
-    log.info(f"Pi boot — Python {sys.version.split()[0]} — log: {config.LOG_PATH}")
+    # Use WARNING so this always appears on stderr (captured by journalctl)
+    # even when the USB drive is not mounted and no file handler was added.
+    log.warning(f"Pi boot — Python {sys.version.split()[0]} — log: {config.LOG_PATH}")
 
     return log
 
