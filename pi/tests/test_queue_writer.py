@@ -126,7 +126,7 @@ class TestStop:
         w._thread.is_alive.return_value = True
         with caplog.at_level(logging.WARNING, logger="obd-collector"):
             w.stop()
-        assert "did not stop within 10s" in caplog.text
+        assert "did not stop within 15s" in caplog.text
 
 
 # ---------------------------------------------------------------------------
