@@ -27,6 +27,7 @@ import time
 import obd
 
 from config import config
+from health import write_reconnect_count
 from logger import logger
 
 RETRY_INTERVAL_S = 15
@@ -99,6 +100,9 @@ class OBDConnection:
         logger.warning("OBD connection lost — attempting reconnect")
         self.disconnect()
         self.reconnect_count += 1
+        # Persist count so the sync script (separate process) can include
+        # the live value in health snapshots without inter-process communication.
+        write_reconnect_count(self.reconnect_count)
         self.connect()
         logger.info(f"OBD reconnected (total reconnects this session: {self.reconnect_count})")
 
