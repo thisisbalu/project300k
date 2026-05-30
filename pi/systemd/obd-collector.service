@@ -35,6 +35,9 @@ WatchdogSec=60
 # to respond. Default TimeoutStartSec=90s would kill the service before READY=1
 # is sent on the first boot. 300s allows for multiple retries before giving up.
 TimeoutStartSec=300
+# TimeoutStopSec must exceed the OBD connection timeout (30s) plus queue drain
+# time (up to 15s) so systemd does not send SIGKILL before shutdown completes.
+TimeoutStopSec=60
 # PYTHONUNBUFFERED ensures stdout/stderr lines reach journald immediately
 # rather than being held in Python's block buffer in non-TTY mode.
 Environment=PYTHONUNBUFFERED=1
