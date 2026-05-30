@@ -23,6 +23,10 @@ Metrics collected:
 restart_count is stored in a plain text file on the USB drive so it
 survives across systemd restarts and Pi reboots. It is incremented on
 every boot of main.py before anything else runs.
+
+obd_reconnect_count is also stored in a file so the sync script (which
+runs as a separate process) can include the live value in health snapshots.
+The collector updates it every time OBDConnection.reconnect() is called.
 """
 
 from __future__ import annotations
@@ -36,11 +40,12 @@ from config import config
 from logger import logger
 
 
-RESTART_COUNT_PATH = "/mnt/usb/data/restart_count"
-CPU_TEMP_PATH      = "/sys/class/thermal/thermal_zone0/temp"
-USB_MOUNT_PATH     = "/mnt/usb"
-BT_ADAPTER_PATH    = "/sys/class/bluetooth/hci0"
-VERSION_PATH       = "/home/pi/project300k/pi/VERSION"
+RESTART_COUNT_PATH   = "/mnt/usb/data/restart_count"
+RECONNECT_COUNT_PATH = "/mnt/usb/data/reconnect_count"
+CPU_TEMP_PATH        = "/sys/class/thermal/thermal_zone0/temp"
+USB_MOUNT_PATH       = "/mnt/usb"
+BT_ADAPTER_PATH      = "/sys/class/bluetooth/hci0"
+VERSION_PATH         = "/home/pi/project300k/pi/VERSION"
 
 
 def increment_restart_count() -> int:
@@ -68,11 +73,51 @@ def increment_restart_count() -> int:
     try:
         with open(RESTART_COUNT_PATH, "w") as f:
             f.write(str(count))
+            # fsync so the count survives an abrupt power cut (engine off).
+            # Without this, the write may sit in the kernel page cache and be
+            # lost if power is cut before the cache is flushed to the USB drive.
+            f.flush()
+            os.fsync(f.fileno())
     except OSError as e:
         logger.warning(f"Could not write restart count: {e}")
 
     logger.info(f"Restart count: {count}")
     return count
+
+
+def read_reconnect_count() -> int:
+    """Read the OBD BT reconnect count written by the collector process.
+
+    The sync script runs as a separate process and cannot access
+    OBDConnection.reconnect_count directly. The collector writes the count
+    to a file on every reconnect; this function reads it for the health snapshot.
+
+    Returns 0 if the file is missing (first boot or collector not running).
+    """
+    try:
+        if os.path.exists(RECONNECT_COUNT_PATH):
+            with open(RECONNECT_COUNT_PATH) as f:
+                return int(f.read().strip())
+    except (ValueError, OSError):
+        pass
+    return 0
+
+
+def write_reconnect_count(count: int) -> None:
+    """Persist the OBD BT reconnect count to the USB drive.
+
+    Called by OBDConnection.reconnect() so the sync script can include
+    the live count in health snapshots without inter-process communication.
+
+    Write failures are logged but not fatal — the count is best-effort.
+    """
+    try:
+        with open(RECONNECT_COUNT_PATH, "w") as f:
+            f.write(str(count))
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError as e:
+        logger.warning(f"Could not write reconnect count: {e}")
 
 
 def _read_cpu_temp() -> float | None:
@@ -161,7 +206,8 @@ def collect(
     """Collect a full Pi health snapshot for the sync payload.
 
     Args:
-        obd_reconnect_count: From OBDConnection.reconnect_count.
+        obd_reconnect_count: From OBDConnection.reconnect_count (collector)
+                             or read_reconnect_count() (sync script).
         restart_count:       Current value from increment_restart_count().
         rtc_ok:              1 if DS3231 OSF clear and chip found, 0 otherwise.
                              Passed in from check_rtc() in main.py.

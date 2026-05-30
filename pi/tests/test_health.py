@@ -10,6 +10,28 @@ import pytest
 # increment_restart_count()
 # ---------------------------------------------------------------------------
 
+class TestReconnectCountFile:
+    def test_read_returns_0_when_file_missing(self, tmp_path):
+        from health import read_reconnect_count
+        with patch("health.RECONNECT_COUNT_PATH", str(tmp_path / "nonexistent")):
+            assert read_reconnect_count() == 0
+
+    def test_write_then_read_roundtrip(self, tmp_path):
+        from health import write_reconnect_count, read_reconnect_count
+        path = str(tmp_path / "reconnect_count")
+        with patch("health.RECONNECT_COUNT_PATH", path):
+            write_reconnect_count(7)
+            assert read_reconnect_count() == 7
+
+    def test_write_failure_logs_warning(self, tmp_path, caplog):
+        import logging
+        from health import write_reconnect_count
+        with patch("health.RECONNECT_COUNT_PATH", "/nonexistent/dir/file"), \
+             caplog.at_level(logging.WARNING, logger="obd-collector"):
+            write_reconnect_count(3)
+        assert "Could not write reconnect count" in caplog.text
+
+
 class TestIncrementRestartCount:
     def test_first_boot_creates_file_returns_1(self, tmp_path):
         from health import increment_restart_count, RESTART_COUNT_PATH
@@ -38,6 +60,22 @@ class TestIncrementRestartCount:
             count = increment_restart_count()
         assert count == 1
         assert "Could not read" in caplog.text
+
+    def test_write_calls_fsync(self, tmp_path):
+        """File must be fsync'd so the count survives an abrupt power cut."""
+        from health import increment_restart_count
+        path = str(tmp_path / "restart_count")
+        fsynced = []
+        original_fsync = os.fsync
+
+        def capture_fsync(fd):
+            fsynced.append(fd)
+            original_fsync(fd)
+
+        with patch("health.RESTART_COUNT_PATH", path), \
+             patch("os.fsync", side_effect=capture_fsync):
+            increment_restart_count()
+        assert fsynced
 
     def test_write_failure_logs_warning(self, tmp_path, caplog):
         import logging
