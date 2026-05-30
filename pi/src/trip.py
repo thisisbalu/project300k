@@ -24,6 +24,9 @@ Threading:
     _last_voltage, _polling_paused) is protected by _lock to prevent
     data races between concurrent callback invocations.
 
+    DTC scans run on daemon threads. stop() joins them with a timeout so
+    obd_connection.disconnect() is not called while a scan is mid-query.
+
 On Bluetooth drop mid-trip:
     The same trip_id is kept after reconnection. The gap in obd_1s data
     is honest and acceptable — splitting a single drive into multiple
@@ -66,13 +69,17 @@ class TripManager:
     Attributes:
         current_trip_id: UUID string of the active trip, or None between trips.
                          Read by Collector callbacks — protected by _lock.
+        is_paused:       True when 1s/5s polling is suppressed (RPM=0 for >30s).
+                         Read by Collector._make_callback() — no lock needed
+                         because it is a single bool written atomically.
     """
 
     def __init__(self, queue_writer, obd_connection) -> None:
         """Initialise with dependencies needed for writes and DTC scans.
 
         Args:
-            queue_writer:   QueueWriter for persisting trip rows.
+            queue_writer:   QueueWriter for persisting trip rows and
+                            issuing the trip-end UPDATE via direct_execute().
             obd_connection: OBDConnection for issuing DTC scan commands.
         """
         self._queue_writer = queue_writer
@@ -93,6 +100,22 @@ class TripManager:
 
         self._last_voltage: float | None = None
         self._polling_paused: bool = False
+
+        # Track active DTC scan threads so stop() can join them before
+        # obd_connection.disconnect() closes the connection they are using.
+        self._dtc_threads: list[threading.Thread] = []
+        self._dtc_threads_lock = threading.Lock()
+
+    @property
+    def is_paused(self) -> bool:
+        """True when 1s/5s polling is suppressed (RPM=0 for >30s).
+
+        Read by Collector._make_callback() on the OBD callback thread.
+        Written by _pause_polling()/_resume_polling() under _lock.
+        A single bool read/write is atomic in CPython, so no separate
+        lock is required for this read-only property.
+        """
+        return self._polling_paused
 
     def on_rpm(self, response: obd.OBDResponse) -> None:
         """Handle an incoming RPM reading.
@@ -151,15 +174,32 @@ class TripManager:
         with self._lock:
             self._last_voltage = response.value.magnitude
 
+    def stop(self) -> None:
+        """Wait for any in-flight DTC scan threads to complete.
+
+        Called from main.py's finally block after collector.stop() and before
+        obd_connection.disconnect(), so the scan threads finish their query()
+        calls before the underlying serial connection is closed.
+        """
+        with self._dtc_threads_lock:
+            threads = list(self._dtc_threads)
+        for t in threads:
+            t.join(timeout=5)
+        logger.info("TripManager stopped")
+
     def _start_trip(self) -> None:
         """Begin a new trip — generate UUID, persist trips row, scan DTCs.
 
-        Must be called with _lock held. _scan_dtc() is called after releasing
-        state so DTC scan duration does not block other callbacks.
+        Must be called with _lock held. _scan_dtc() is dispatched after
+        state is set so its serial I/O does not block the lock.
         """
         self.current_trip_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
 
+        # get_trip_number reads committed trips. If the previous trip's INSERT
+        # is still pending in the QueueWriter batch, the count may be one low,
+        # producing a non-sequential trip_number. This is cosmetic only — the
+        # UUID is the authoritative trip identifier.
         trip_number = get_trip_number(self._queue_writer.conn)
         row = {
             "id": self.current_trip_id,
@@ -182,16 +222,17 @@ class TripManager:
     def _end_trip(self) -> None:
         """Close the current trip — write end_time, calculate duration, scan DTCs.
 
-        Must be called with _lock held. Uses storage.update_trip_end() for a
-        direct UPDATE rather than inserting a duplicate row.
+        Must be called with _lock held. Uses update_trip_end() which routes
+        through QueueWriter.direct_execute() so the UPDATE is serialised
+        against the writer thread's INSERT batches via _db_lock.
         """
         end_time = datetime.now(timezone.utc).isoformat()
         trip_id = self.current_trip_id
 
-        # Update existing trips row — cannot go through QueueWriter INSERT
-        # because INSERT would create a duplicate row with the same UUID.
-        # update_trip_end() issues a direct UPDATE on the SQLite connection.
-        update_trip_end(self._queue_writer.conn, trip_id, end_time)
+        # update_trip_end() calls queue_writer.direct_execute() which acquires
+        # _db_lock — this prevents the UPDATE from racing the writer thread's
+        # concurrent INSERT batch on the same SQLite connection.
+        update_trip_end(self._queue_writer, trip_id, end_time)
 
         logger.info(f"Trip ended: {trip_id}")
         self.current_trip_id = None
@@ -208,6 +249,9 @@ class TripManager:
         separate daemon thread avoids this — the scan completes independently
         without blocking the polling loop.
 
+        The thread is tracked in _dtc_threads so stop() can join it before
+        obd_connection.disconnect() is called.
+
         Args:
             trip_id:      UUID of the trip this scan belongs to.
             scan_trigger: "trip_start" or "trip_end".
@@ -218,6 +262,8 @@ class TripManager:
             daemon=True,
             name=f"dtc-scan-{scan_trigger}",
         )
+        with self._dtc_threads_lock:
+            self._dtc_threads.append(t)
         t.start()
 
     def _scan_dtc(self, trip_id: str, scan_trigger: str) -> None:

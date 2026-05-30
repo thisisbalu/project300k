@@ -196,6 +196,7 @@ class TestTripEnd:
 
         assert tm.current_trip_id is None
         mock_end.assert_called_once()
+        # update_trip_end(queue_writer, trip_id, end_time)
         args = mock_end.call_args[0]
         assert args[1] == trip_id
 
@@ -289,6 +290,26 @@ class TestPollingPause:
 # ---------------------------------------------------------------------------
 # _dispatch_dtc_scan() — starts daemon thread
 # ---------------------------------------------------------------------------
+
+class TestTripManagerStop:
+    def test_stop_joins_dtc_threads(self, tm):
+        """stop() waits for in-flight DTC threads before returning."""
+        finished = []
+        def slow_scan(trip_id, trigger):
+            import time as _t
+            _t.sleep(0.05)
+            finished.append(True)
+
+        with patch.object(tm, "_scan_dtc", side_effect=slow_scan):
+            tm._dispatch_dtc_scan("fake-id", "trip_end")
+        tm.stop()
+        assert finished  # thread completed before stop() returned
+
+    def test_is_paused_property_reflects_state(self, tm):
+        assert tm.is_paused is False
+        tm._polling_paused = True
+        assert tm.is_paused is True
+
 
 class TestDispatchDtcScan:
     def test_dispatch_starts_daemon_thread(self, tm):
