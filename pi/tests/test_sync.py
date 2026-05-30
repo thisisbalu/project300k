@@ -51,6 +51,14 @@ class TestCheckNetwork:
             assert _check_network() is False
         assert "Network check failed (wlan0)" in caplog.text
 
+    def test_ip_binary_not_found_logs_specific_message(self, caplog):
+        import logging
+        from sync import _check_network
+        with patch("sync.subprocess.run", side_effect=FileNotFoundError()), \
+             caplog.at_level(logging.WARNING, logger="obd-collector"):
+            assert _check_network() is False
+        assert "'ip' binary not found" in caplog.text
+
     def test_ping_exception_returns_false(self, caplog):
         import logging
         from sync import _check_network
@@ -183,7 +191,8 @@ class TestWriteHealthSnapshot:
             "collector_version": "1.0.0",
         }
 
-        with patch("sync.health.collect", return_value=mock_metrics):
+        with patch("sync.health.collect", return_value=mock_metrics), \
+             patch("sync.health.read_reconnect_count", return_value=0):
             _write_health_snapshot(db_conn)
 
         count = db_conn.execute("SELECT COUNT(*) FROM pi_health_log").fetchone()[0]
@@ -200,7 +209,8 @@ class TestWriteHealthSnapshot:
             "collector_version": "unknown",
         }
 
-        with patch("sync.health.collect", return_value=mock_metrics):
+        with patch("sync.health.collect", return_value=mock_metrics), \
+             patch("sync.health.read_reconnect_count", return_value=0):
             _write_health_snapshot(db_conn)
 
         row = db_conn.execute("SELECT synced FROM pi_health_log").fetchone()
@@ -232,6 +242,7 @@ class TestWriteHealthSnapshot:
             "collector_version": "unknown",
         }
         with patch("sync.health.collect", return_value=mock_metrics), \
+             patch("sync.health.read_reconnect_count", return_value=0), \
              caplog.at_level(logging.ERROR, logger="obd-collector"):
             _write_health_snapshot(bad_conn)
         assert "Failed to write health snapshot" in caplog.text
@@ -263,7 +274,8 @@ class TestWriteHealthSnapshot:
             result = original_collect(**kwargs)
             return result
 
-        with patch("sync.health.collect", side_effect=patched_collect):
+        with patch("sync.health.collect", side_effect=patched_collect), \
+             patch("sync.health.read_reconnect_count", return_value=0):
             _write_health_snapshot(db_conn)
 
         row = db_conn.execute("SELECT rows_collected FROM pi_health_log").fetchone()

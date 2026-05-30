@@ -35,6 +35,7 @@ Idempotency:
 
 import subprocess
 import sqlite3
+import time
 import uuid
 from datetime import datetime, timezone
 
@@ -45,6 +46,12 @@ from config import config
 from logger import logger
 from storage import get_connection
 
+# Maximum batches per table per sync run — guards against an infinite loop
+# if the UPDATE synced=1 silently fails and rows never leave the queue.
+_MAX_BATCHES_PER_TABLE = 1000
+
+# Retry attempts for the post-POST UPDATE synced=1 on OperationalError.
+_SYNCED_UPDATE_RETRIES = 5
 
 SYNC_TABLE_ORDER = [
     "obd_1s",
@@ -107,6 +114,9 @@ def _check_network() -> bool:
         if "inet " not in result.stdout:
             logger.info("Sync skipped — no hotspot (wlan0 has no IP)")
             return False
+    except FileNotFoundError:
+        logger.warning("Network check failed (wlan0): 'ip' binary not found — check PATH")
+        return False
     except Exception as e:
         logger.warning(f"Network check failed (wlan0): {e}")
         return False
@@ -133,6 +143,10 @@ def _write_health_snapshot(conn: sqlite3.Connection) -> None:
 
     Counts total unsynced rows across all tables before sync so the
     server can see how much data accumulated since the last sync.
+
+    obd_reconnect_count is read from the file written by OBDConnection —
+    the collector and sync script run as separate processes, so the count
+    cannot be read from memory directly.
     """
     # Count total unsynced rows across all data tables.
     rows_pending = 0
@@ -147,8 +161,8 @@ def _write_health_snapshot(conn: sqlite3.Connection) -> None:
             logger.debug(f"Table '{table}' does not exist yet — skipping count")
 
     metrics = health.collect(
-        obd_reconnect_count=0,  # 0 when run standalone — collector tracks this
-        restart_count=0,        # already incremented by main.py on boot
+        obd_reconnect_count=health.read_reconnect_count(),
+        restart_count=0,  # already incremented by main.py on boot
     )
     metrics["rows_collected"] = rows_pending
 
@@ -174,8 +188,11 @@ def _sync_table(conn: sqlite3.Connection, table: str) -> int:
 
     Reads SYNC_BATCH_SIZE rows WHERE synced=0, serialises to JSON,
     POSTs to the API with Bearer auth. On HTTP 200, marks rows synced=1
-    and repeats until no unsynced rows remain. On any failure, logs the
-    error and returns the count synced so far — next run retries the rest.
+    with a retry loop for OperationalError (database locked by collector).
+    Repeats until no unsynced rows remain or _MAX_BATCHES_PER_TABLE is hit.
+
+    On POST failure, logs the error and returns the count synced so far —
+    next run retries the rest.
 
     Args:
         conn:  Active SQLite connection.
@@ -185,8 +202,11 @@ def _sync_table(conn: sqlite3.Connection, table: str) -> int:
         Total number of rows successfully synced for this table.
     """
     total_synced = 0
+    batches = 0
 
-    while True:
+    while batches < _MAX_BATCHES_PER_TABLE:
+        batches += 1
+
         try:
             cursor = conn.execute(
                 f"SELECT * FROM {table} WHERE synced=0 LIMIT ?",
@@ -215,18 +235,38 @@ def _sync_table(conn: sqlite3.Connection, table: str) -> int:
 
             # Mark successfully synced rows — use a single UPDATE with IN clause
             # for efficiency rather than one UPDATE per row.
+            # Retry on OperationalError: the collector holds a write lock during
+            # batch commits. If the UPDATE fails, the rows were already POSTed
+            # successfully — the server's ON CONFLICT (id) DO NOTHING makes
+            # a retry safe, but we must mark them locally to stop re-sending.
             placeholders = ",".join("?" * len(row_ids))
-            conn.execute(
-                f"UPDATE {table} SET synced=1 WHERE id IN ({placeholders})",
-                row_ids
-            )
-            conn.commit()
+            update_sql = f"UPDATE {table} SET synced=1 WHERE id IN ({placeholders})"
+            for attempt in range(_SYNCED_UPDATE_RETRIES):
+                try:
+                    conn.execute(update_sql, row_ids)
+                    conn.commit()
+                    break
+                except sqlite3.OperationalError as lock_err:
+                    if attempt < _SYNCED_UPDATE_RETRIES - 1:
+                        time.sleep(0.2 * (attempt + 1))
+                    else:
+                        logger.error(
+                            f"Failed to mark {len(row_ids)} rows synced in '{table}' "
+                            f"after {_SYNCED_UPDATE_RETRIES} attempts: {lock_err}"
+                        )
+
             total_synced += len(row_ids)
             logger.info(f"Synced {len(row_ids)} rows from {table} (total: {total_synced})")
 
         except requests.RequestException as e:
             logger.error(f"Sync POST failed for {table}: {e} — will retry next run")
             break
+
+    if batches >= _MAX_BATCHES_PER_TABLE:
+        logger.warning(
+            f"Reached max batch limit ({_MAX_BATCHES_PER_TABLE}) for '{table}' — "
+            "possible stuck sync loop. Remaining rows deferred to next run."
+        )
 
     return total_synced
 
