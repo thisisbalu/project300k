@@ -1,0 +1,7 @@
+{
+    "python.defaultInterpreterPath": "${workspaceFolder}/pi/venv/bin/python3",
+    "python.analysis.extraPaths": ["${workspaceFolder}/pi/src"],
+    "python.analysis.diagnosticSeverityOverrides": {
+        "reportMissingModuleSource": "none"
+    }
+}
