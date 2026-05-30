@@ -131,31 +131,30 @@ class TestMain:
             if exc:
                 raise exc
 
+        mock_qw = MagicMock()
+        mock_coll = MagicMock()
+        mock_obd = MagicMock()
+        mock_tm = MagicMock()
+
         with patch("main.smbus2.SMBus") as mock_smbus, \
              patch("main.health.increment_restart_count", return_value=1), \
              patch("main.get_connection", return_value=mock_conn), \
              patch("main.init_schema"), \
-             patch("main.QueueWriter") as mock_qw_cls, \
-             patch("main.OBDConnection") as mock_obd_cls, \
-             patch("main.TripManager"), \
-             patch("main.Collector") as mock_coll_cls, \
+             patch("main.QueueWriter", return_value=mock_qw), \
+             patch("main.OBDConnection", return_value=mock_obd), \
+             patch("main.TripManager", return_value=mock_tm), \
+             patch("main.Collector", return_value=mock_coll), \
              patch("main.sdnotify.SystemdNotifier"), \
              patch("main.time.sleep", side_effect=fake_sleep):
 
             mock_smbus.return_value.__enter__ = MagicMock(return_value=mock_bus)
             mock_smbus.return_value.__exit__ = MagicMock(return_value=False)
 
-            mock_qw = MagicMock()
-            mock_qw_cls.return_value = mock_qw
-            mock_coll = MagicMock()
-            mock_coll_cls.return_value = mock_coll
-            mock_obd = MagicMock()
-            mock_obd_cls.return_value = mock_obd
-
             main()
 
-        # Verify clean shutdown sequence
+        # Verify clean shutdown sequence including new trip_manager.stop()
         mock_coll.stop.assert_called_once()
+        mock_tm.stop.assert_called_once()
         mock_qw.stop.assert_called_once()
         mock_obd.disconnect.assert_called_once()
         mock_conn.close.assert_called_once()
@@ -173,10 +172,10 @@ class TestMain:
              patch("main.health.increment_restart_count", return_value=1), \
              patch("main.get_connection", return_value=MagicMock()), \
              patch("main.init_schema"), \
-             patch("main.QueueWriter"), \
-             patch("main.OBDConnection"), \
-             patch("main.TripManager"), \
-             patch("main.Collector"), \
+             patch("main.QueueWriter", return_value=MagicMock()), \
+             patch("main.OBDConnection", return_value=MagicMock()), \
+             patch("main.TripManager", return_value=MagicMock()), \
+             patch("main.Collector", return_value=MagicMock()), \
              patch("main.sdnotify.SystemdNotifier"), \
              patch("main.time.sleep", side_effect=KeyboardInterrupt):
 

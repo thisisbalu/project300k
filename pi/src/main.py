@@ -135,7 +135,8 @@ def main() -> None:
     # Collector opens its own obd.Async connection — obd.Async is a subclass
     # of obd.OBD and must be instantiated with a port string, not wrapped
     # around the existing OBDConnection object.
-    collector = Collector(queue_writer, trip_manager)
+    # obd_connection is passed for reconnect() and reconnect_count tracking.
+    collector = Collector(queue_writer, trip_manager, obd_connection)
     collector.start()
 
     # Notify systemd that initialisation is complete and the service is ready.
@@ -158,6 +159,9 @@ def main() -> None:
         logger.info("Shutting down — draining queue")
     finally:
         collector.stop()
+        # Join DTC scan threads before disconnecting — they hold a reference
+        # to obd_connection.connection and call query() on it.
+        trip_manager.stop()
         queue_writer.stop()  # blocks until queue is empty
         obd_connection.disconnect()
         conn.close()
