@@ -38,15 +38,32 @@ from logger import logger
 SCHEMA_VERSION = 1
 
 
-def get_connection() -> sqlite3.Connection:
+def get_connection(_depth: int = 0) -> sqlite3.Connection:
     """Open and configure the SQLite connection.
 
     Enables WAL journal mode and foreign key enforcement. Sets row_factory
     to sqlite3.Row so query results can be accessed by column name.
 
+    On integrity check failure, renames the corrupt DB to .corrupt and opens
+    a fresh empty database. _depth guards against infinite recursion if the
+    rename fails or the new database itself fails integrity check (drive fault).
+
+    Args:
+        _depth: Internal recursion counter — callers must not set this.
+
     Returns:
         Configured sqlite3.Connection instance.
+
+    Raises:
+        RuntimeError: If integrity check fails twice (drive likely failing).
+        OSError:      If the corrupt DB cannot be renamed.
     """
+    if _depth >= 2:
+        raise RuntimeError(
+            "SQLite integrity check failed twice — USB drive may be failing. "
+            "Replace the drive and restore from pg_dump backup."
+        )
+
     conn = sqlite3.connect(config.DB_PATH, check_same_thread=False, timeout=10)
     conn.row_factory = sqlite3.Row
 
@@ -88,10 +105,15 @@ def get_connection() -> sqlite3.Connection:
         conn.close()
         import os
         corrupt_path = config.DB_PATH + ".corrupt"
-        os.rename(config.DB_PATH, corrupt_path)
+        try:
+            os.rename(config.DB_PATH, corrupt_path)
+        except OSError as e:
+            logger.error(f"Could not rename corrupt DB to {corrupt_path}: {e}")
+            raise
         logger.warning(f"Corrupt DB saved to {corrupt_path}")
-        # Recurse to open a fresh database — integrity check will pass on empty DB.
-        return get_connection()
+        # Recurse to open a fresh database. _depth prevents infinite recursion
+        # if the drive is failing and every new file also fails integrity check.
+        return get_connection(_depth=_depth + 1)
 
     logger.info(f"SQLite connected: {config.DB_PATH}")
     return conn
@@ -135,20 +157,21 @@ def get_trip_number(conn: sqlite3.Connection) -> int:
         return 0
 
 
-def update_trip_end(conn: sqlite3.Connection, trip_id: str, end_time: str) -> None:
+def update_trip_end(queue_writer, trip_id: str, end_time: str) -> None:
     """Write end_time and duration_s to an existing trips row.
 
-    Called by TripManager._end_trip() via a direct UPDATE rather than
-    going through QueueWriter INSERT, because the trips row already exists
-    (written at trip start) and cannot be re-inserted with the same UUID.
+    Called by TripManager._end_trip() via QueueWriter.direct_execute() so
+    the UPDATE is serialised against the writer thread's INSERT batches.
+    Using direct_execute() (rather than conn.execute() directly) acquires
+    _db_lock and prevents concurrent SQLite access from two threads.
 
     Args:
-        conn:     Active SQLite connection.
-        trip_id:  UUID of the trip to update.
-        end_time: ISO8601 UTC end timestamp.
+        queue_writer: QueueWriter — provides direct_execute() and the lock.
+        trip_id:      UUID of the trip to update.
+        end_time:     ISO8601 UTC end timestamp.
     """
     try:
-        conn.execute(
+        queue_writer.direct_execute(
             """UPDATE trips
                SET end_time = ?,
                    duration_s = CAST(
@@ -156,11 +179,10 @@ def update_trip_end(conn: sqlite3.Connection, trip_id: str, end_time: str) -> No
                    ),
                    synced = 0
                WHERE id = ?""",
-            (end_time, end_time, trip_id)
+            (end_time, end_time, trip_id),
         )
-        conn.commit()
         logger.info(f"Trip end written: {trip_id}")
-    except sqlite3.Error as e:
+    except Exception as e:
         logger.error(f"Failed to write trip end for {trip_id}: {e}")
 
 

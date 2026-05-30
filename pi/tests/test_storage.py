@@ -221,28 +221,32 @@ class TestGetTripNumber:
 class TestUpdateTripEnd:
     def test_writes_end_time_and_duration(self, db_conn, trip_row):
         from storage import update_trip_end
+        from queue_writer import QueueWriter
+        qw = QueueWriter(db_conn)
         end_time = "2026-01-01T01:00:00+00:00"
-        update_trip_end(db_conn, trip_row, end_time)
+        update_trip_end(qw, trip_row, end_time)
         row = db_conn.execute("SELECT end_time, duration_s, synced FROM trips WHERE id=?", (trip_row,)).fetchone()
         assert row["end_time"] == end_time
         assert abs(row["duration_s"] - 3600) <= 1  # julianday() has float rounding
         assert row["synced"] == 0
 
-    def test_handles_sqlite_error_without_raising(self, caplog):
+    def test_handles_exception_without_raising(self, caplog):
         import logging
         from storage import update_trip_end
-        bad_conn = MagicMock()
-        bad_conn.execute.side_effect = sqlite3.Error("disk full")
+        bad_qw = MagicMock()
+        bad_qw.direct_execute.side_effect = Exception("disk full")
         with caplog.at_level(logging.ERROR, logger="obd-collector"):
-            update_trip_end(bad_conn, "fake-id", "2026-01-01T00:00:00+00:00")
+            update_trip_end(bad_qw, "fake-id", "2026-01-01T00:00:00+00:00")
         assert "Failed to write trip end" in caplog.text
 
     def test_sets_synced_to_zero(self, db_conn, trip_row):
         """Marking synced=0 ensures the updated row is picked up by the sync script."""
         from storage import update_trip_end
+        from queue_writer import QueueWriter
+        qw = QueueWriter(db_conn)
         # Manually mark synced=1 first
         db_conn.execute("UPDATE trips SET synced=1 WHERE id=?", (trip_row,))
         db_conn.commit()
-        update_trip_end(db_conn, trip_row, "2026-01-01T01:00:00+00:00")
+        update_trip_end(qw, trip_row, "2026-01-01T01:00:00+00:00")
         row = db_conn.execute("SELECT synced FROM trips WHERE id=?", (trip_row,)).fetchone()
         assert row["synced"] == 0
