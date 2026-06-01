@@ -112,7 +112,7 @@ class TestSyncTable:
         import logging
         from sync import _sync_table
         with caplog.at_level(logging.DEBUG, logger="obd-collector"):
-            count = _sync_table(db_conn, "ford_obd_5s")
+            count = _sync_table(db_conn, "nonexistent_table")
         assert count == 0
         assert "does not exist" in caplog.text
 
@@ -192,7 +192,9 @@ class TestWriteHealthSnapshot:
         }
 
         with patch("sync.health.collect", return_value=mock_metrics), \
-             patch("sync.health.read_reconnect_count", return_value=0):
+             patch("sync.health.read_reconnect_count", return_value=0), \
+             patch("sync.health.read_restart_count", return_value=0), \
+             patch("sync.health.read_rtc_ok", return_value=1):
             _write_health_snapshot(db_conn)
 
         count = db_conn.execute("SELECT COUNT(*) FROM pi_health_log").fetchone()[0]
@@ -210,7 +212,9 @@ class TestWriteHealthSnapshot:
         }
 
         with patch("sync.health.collect", return_value=mock_metrics), \
-             patch("sync.health.read_reconnect_count", return_value=0):
+             patch("sync.health.read_reconnect_count", return_value=0), \
+             patch("sync.health.read_restart_count", return_value=0), \
+             patch("sync.health.read_rtc_ok", return_value=1):
             _write_health_snapshot(db_conn)
 
         row = db_conn.execute("SELECT synced FROM pi_health_log").fetchone()
@@ -243,6 +247,8 @@ class TestWriteHealthSnapshot:
         }
         with patch("sync.health.collect", return_value=mock_metrics), \
              patch("sync.health.read_reconnect_count", return_value=0), \
+             patch("sync.health.read_restart_count", return_value=0), \
+             patch("sync.health.read_rtc_ok", return_value=1), \
              caplog.at_level(logging.ERROR, logger="obd-collector"):
             _write_health_snapshot(bad_conn)
         assert "Failed to write health snapshot" in caplog.text
@@ -275,7 +281,9 @@ class TestWriteHealthSnapshot:
             return result
 
         with patch("sync.health.collect", side_effect=patched_collect), \
-             patch("sync.health.read_reconnect_count", return_value=0):
+             patch("sync.health.read_reconnect_count", return_value=0), \
+             patch("sync.health.read_restart_count", return_value=0), \
+             patch("sync.health.read_rtc_ok", return_value=1):
             _write_health_snapshot(db_conn)
 
         row = db_conn.execute("SELECT rows_collected FROM pi_health_log").fetchone()

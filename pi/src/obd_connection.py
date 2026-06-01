@@ -46,14 +46,16 @@ class OBDConnection:
         self.reconnect_count: int = 0
 
     def connect(self) -> None:
-        """Connect to OBDLink MX+ with indefinite retry.
+        """Verify OBDLink MX+ is reachable then release the connection.
 
-        Blocks until a connection is established. Retries every
-        RETRY_INTERVAL_S seconds on failure — the dongle may not be
-        powered on immediately at Pi boot (ignition delay).
+        Blocks with indefinite retry until the dongle responds — the dongle
+        may not be powered on immediately at Pi boot (ignition delay). Once
+        verified, the connection is closed immediately so Collector can open
+        obd.Async on the same /dev/rfcomm0 port without conflict.
 
-        Logs each retry attempt with the attempt number and logs success
-        with the connected port name.
+        Keeping the sync OBD connection open alongside the async connection
+        would cause both to hold /dev/rfcomm0 simultaneously, splitting the
+        serial byte stream between them and making DTC queries unreliable.
         """
         attempt = 0
         while True:
@@ -61,26 +63,24 @@ class OBDConnection:
             try:
                 logger.info(f"OBD connection attempt {attempt} on {config.OBD_PORT}")
 
-                # fast=False is required on Pi — the default AT fast init
-                # command causes the Pi Bluetooth stack to drop the connection.
-                # timeout=30 gives the OBDLink time to respond over BT.
                 conn = obd.OBD(config.OBD_PORT, fast=False, timeout=30)
 
                 if conn.is_connected():
-                    self._connection = conn
+                    # Close immediately — Collector.query_sync() issues all
+                    # synchronous queries through the async connection after
+                    # temporarily stopping the polling loop.
+                    conn.close()
+                    self._connection = None
                     logger.info(
-                        f"OBD connection established — port: {config.OBD_PORT} "
+                        f"OBD dongle verified on {config.OBD_PORT} "
                         f"protocol: {conn.protocol_name()}"
                     )
                     return
 
-                # python-obd can return a connection object without raising
-                # an exception even when the connection failed — check explicitly.
                 conn.close()
                 raise ConnectionError("Connection object returned but is_connected() is False")
 
             except KeyboardInterrupt:
-                # Propagate shutdown signal — do not swallow it in the retry loop.
                 raise
             except Exception as e:
                 logger.warning(

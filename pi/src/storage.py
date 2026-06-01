@@ -258,6 +258,48 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             synced                       INTEGER DEFAULT 0
         );
 
+        -- ford_obd_5s — Ford Mode 22 TCM: transmission temp, gear, TCC ratio.
+        -- Stub table created at schema init. Populated after FORScan confirms
+        -- Mode 22 TCM addresses (0x221E1C, 0x221E12, 0x221E15) on this VIN.
+        CREATE TABLE IF NOT EXISTS ford_obd_5s (
+            id           TEXT PRIMARY KEY,
+            trip_id      TEXT NOT NULL REFERENCES trips(id),
+            timestamp    TEXT NOT NULL,
+            trans_temp_c REAL,    -- transmission fluid °C  (Mode 22 0x221E1C)
+            trans_gear   INTEGER, -- current gear            (Mode 22 0x221E12)
+            tcc_ratio    REAL,    -- TCC clutch ratio        (Mode 22 0x221E15)
+            synced       INTEGER DEFAULT 0
+        );
+
+        -- ford_obd_10s — Ford Mode 22 PCM: boost and knock data.
+        -- Stub table created at schema init. Populated after FORScan confirms
+        -- addresses (0x220318, 0x22033E, 0x22D137, 0x2203CA) on this VIN.
+        CREATE TABLE IF NOT EXISTS ford_obd_10s (
+            id                TEXT PRIMARY KEY,
+            trip_id           TEXT NOT NULL REFERENCES trips(id),
+            timestamp         TEXT NOT NULL,
+            knock_retard_deg  REAL, -- timing retard from knock °  (Mode 22 0x220318)
+            boost_desired_psi REAL, -- requested boost PSI          (Mode 22 0x22033E)
+            boost_actual_psi  REAL, -- measured boost PSI           (Mode 22 0x22D137, formula TBD)
+            wastegate_pct     REAL, -- wastegate duty cycle %       (Mode 22 0x2203CA)
+            synced            INTEGER DEFAULT 0
+        );
+
+        -- ford_obd_20s — Ford Mode 22/Mode 06 PCM: misfire counters + fuel rail.
+        -- Stub table created at schema init. Populated after FORScan confirms
+        -- Mode 06 misfire addresses and fuel rail pressure address on this VIN.
+        CREATE TABLE IF NOT EXISTS ford_obd_20s (
+            id                     TEXT PRIMARY KEY,
+            trip_id                TEXT NOT NULL REFERENCES trips(id),
+            timestamp              TEXT NOT NULL,
+            misfire_cyl1           INTEGER, -- cyl 1 misfire count (Mode 06 0x06A20C)
+            misfire_cyl2           INTEGER, -- cyl 2 misfire count (Mode 06 0x06A30C)
+            misfire_cyl3           INTEGER, -- cyl 3 misfire count (Mode 06 0x06A40C)
+            misfire_cyl4           INTEGER, -- cyl 4 misfire count (Mode 06 0x06A50C)
+            fuel_rail_pressure_psi REAL,    -- fuel rail PSI       (Mode 22, address TBD)
+            synced                 INTEGER DEFAULT 0
+        );
+
         -- dtc_events — fault codes scanned at trip start and trip end.
         -- Low volume — only populated when DTCs are present.
         CREATE TABLE IF NOT EXISTS dtc_events (
@@ -316,6 +358,21 @@ def _create_indexes(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_obd_30s_trip_id   ON obd_30s(trip_id);
         CREATE INDEX IF NOT EXISTS idx_obd_30s_timestamp  ON obd_30s(timestamp);
         CREATE INDEX IF NOT EXISTS idx_obd_30s_synced     ON obd_30s(synced);
+
+        -- ford_obd_5s indexes
+        CREATE INDEX IF NOT EXISTS idx_ford_obd_5s_trip_id   ON ford_obd_5s(trip_id);
+        CREATE INDEX IF NOT EXISTS idx_ford_obd_5s_timestamp  ON ford_obd_5s(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_ford_obd_5s_synced     ON ford_obd_5s(synced);
+
+        -- ford_obd_10s indexes
+        CREATE INDEX IF NOT EXISTS idx_ford_obd_10s_trip_id   ON ford_obd_10s(trip_id);
+        CREATE INDEX IF NOT EXISTS idx_ford_obd_10s_timestamp  ON ford_obd_10s(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_ford_obd_10s_synced     ON ford_obd_10s(synced);
+
+        -- ford_obd_20s indexes
+        CREATE INDEX IF NOT EXISTS idx_ford_obd_20s_trip_id   ON ford_obd_20s(trip_id);
+        CREATE INDEX IF NOT EXISTS idx_ford_obd_20s_timestamp  ON ford_obd_20s(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_ford_obd_20s_synced     ON ford_obd_20s(synced);
 
         -- dtc_events indexes
         CREATE INDEX IF NOT EXISTS idx_dtc_events_trip_id   ON dtc_events(trip_id);

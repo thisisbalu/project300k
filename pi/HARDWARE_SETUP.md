@@ -4,34 +4,34 @@ Complete these in order. Each section depends on the previous.
 
 ---
 
-## 1. Buy Hardware
+## 1. Buy Hardware ✓
 
-- [ ] OBDLink MX+ (~$120 CAD)
-- [ ] OBD-II extension cable with on/off switch (~$12 CAD)
-- [ ] SanDisk Ultra Fit 32GB USB flash drive (~$12 CAD)
-- [ ] Samsung Pro Endurance 32GB microSD (~$15 CAD)
-- [ ] TP-Link UB500 Bluetooth USB dongle (~$15 CAD)
-- [ ] DS3231 RTC module with CR2032 coin cell (~$8 CAD)
-- [ ] Female-to-female jumper wires × 4 (for DS3231 GPIO)
+- [x] OBDLink MX+ (~$120 CAD)
+- [x] OBD-II extension cable with on/off switch (~$12 CAD)
+- [x] SanDisk Ultra Fit 32GB USB flash drive (~$12 CAD)
+- [x] Samsung Pro Endurance 32GB microSD (~$15 CAD)
+- [x] TP-Link UB500 Bluetooth USB dongle (~$15 CAD)
+- [x] DS3231 RTC module with CR2032 coin cell (~$8 CAD)
+- [x] Female-to-female jumper wires × 4 (for DS3231 GPIO)
 
 **Already have:** Pi 3B (Kano kit)
 
 ---
 
-## 2. Flash microSD
+## 2. Flash microSD ✓
 
-- [ ] Download Raspberry Pi OS Lite (Bookworm 64-bit, no desktop)
-- [ ] Flash to Samsung Pro Endurance microSD using Raspberry Pi Imager
-- [ ] In Imager advanced settings before flashing:
-  - [ ] Set hostname: `bronco-pi`
-  - [ ] Enable SSH with password auth
-  - [ ] Set username: `pi`, password: choose a strong one
-  - [ ] Do NOT configure WiFi here — done in wpa_supplicant later
-- [ ] Insert microSD into Pi, boot, confirm SSH works: `ssh pi@bronco-pi.local`
+- [x] Download Raspberry Pi OS Lite (Bookworm 64-bit, no desktop)
+- [x] Flash to Samsung Pro Endurance microSD using Raspberry Pi Imager
+- [x] In Imager advanced settings before flashing:
+  - [x] Set hostname: `project300k`
+  - [x] Enable SSH with password auth
+  - [x] Set username: `balu`, password: set
+  - [x] Configured home WiFi in Imager (also add iPhone hotspot in step 4)
+- [ ] Insert microSD into Pi, boot, confirm SSH works: `ssh balu@project300k.local`
 
 ---
 
-## 3. Wire DS3231 RTC to Pi GPIO
+## 3. Wire DS3231 RTC to Pi GPIO ✓
 
 Connect DS3231 to Pi 3B GPIO header (4 wires):
 
@@ -42,102 +42,55 @@ Connect DS3231 to Pi 3B GPIO header (4 wires):
 | SDA | GPIO 2 (SDA1) | Pin 3 |
 | SCL | GPIO 3 (SCL1) | Pin 5 |
 
-- [ ] Connect DS3231 module to GPIO header with jumper wires
-- [ ] Confirm coin cell is inserted in DS3231
+- [x] Connect DS3231 module to GPIO header with jumper wires
+- [x] Confirm coin cell is inserted in DS3231
 
 ---
 
-## 4. Pi OS Configuration (SSH into Pi)
+## 4. Pi OS Configuration (SSH into Pi) ✓
 
 ### Disable onboard Bluetooth (conflicts with USB dongle)
-- [ ] Add to `/boot/firmware/config.txt`:
-  ```
-  dtoverlay=disable-bt
-  ```
-- [ ] Disable the BT service:
-  ```bash
-  sudo systemctl disable hciuart
-  sudo systemctl disable bluetooth
-  ```
+- [x] Add to `/boot/firmware/config.txt`: `dtoverlay=disable-bt`
+- [x] Disable the BT service: `sudo systemctl disable bluetooth` (hciuart does not exist on Bookworm)
 
 ### Enable I2C (for DS3231)
-- [ ] Run `sudo raspi-config` → Interface Options → I2C → Enable
-- [ ] Reboot, then verify: `ls /dev/i2c*` should show `/dev/i2c-1`
-- [ ] Confirm DS3231 is detected:
-  ```bash
-  sudo apt install -y i2c-tools
-  i2cdetect -y 1   # should show 0x68
-  ```
+- [x] Run `sudo raspi-config` → Interface Options → I2C → Enable
+- [x] Reboot, then verify: `ls /dev/i2c*` — shows `/dev/i2c-1` and `/dev/i2c-2` (i2c-2 is internal, ignore it)
+- [x] Confirm DS3231 is detected: `i2cdetect -y 1` — shows `68` at address 0x68
 
 ### Configure DS3231 as hardware clock
-- [ ] Add to `/boot/firmware/config.txt`:
-  ```
-  dtoverlay=i2c-rtc,ds3231
-  ```
-- [ ] Reboot, then:
-  ```bash
-  sudo apt install -y fake-hwclock
-  sudo hwclock --systohc         # write current time to RTC
-  sudo hwclock --verbose         # confirm RTC time is correct
-  ```
-- [ ] Verify time survives reboot without internet: disconnect ethernet, reboot, check `date`
+- [x] Add to `/boot/firmware/config.txt`: `dtoverlay=i2c-rtc,ds3231`
+- [x] Installed `util-linux-extra` (hwclock not in util-linux on Bookworm)
+- [x] Installed `fake-hwclock`
+- [x] `sudo hwclock --systohc` — synced system time to RTC
+- [x] Verified RTC time is correct with `sudo hwclock --verbose`
 
 ### Configure iPhone hotspot WiFi
-- [ ] Add to `/etc/wpa_supplicant/wpa_supplicant.conf`:
-  ```
-  network={
-      ssid="Your iPhone Name"
-      psk="your-hotspot-password"
-      key_mgmt=WPA-PSK
-  }
-  ```
-- [ ] `sudo wpa_cli reconfigure` then `ip addr show wlan0` — confirm IP assigned
+- [x] Added via NetworkManager: `sudo nmcli device wifi connect "BaluGadiPhone" password "..."` (wpa_supplicant.conf not used on Bookworm)
+- [x] Confirmed saved: `nmcli connection show` lists `BaluGadiPhone`
 
 ### Install Tailscale
-- [ ] `curl -fsSL https://tailscale.com/install.sh | sh`
-- [ ] `sudo tailscale up` — authenticate via browser link
-- [ ] Confirm Pi appears in Tailscale admin console with a 100.x.x.x IP
+- [x] `curl -fsSL https://tailscale.com/install.sh | sh`
+- [x] `sudo tailscale up` — authenticated via browser
+- [x] Pi Tailscale IP: `100.83.217.46`
 
 ### Enable hardware watchdog
-- [ ] Add to `/boot/firmware/config.txt`:
-  ```
-  dtparam=watchdog=on
-  ```
-- [ ] Install watchdog daemon:
-  ```bash
-  sudo apt install -y watchdog
-  ```
-- [ ] Edit `/etc/watchdog.conf`:
-  ```
-  watchdog-device = /dev/watchdog
-  watchdog-timeout = 15
-  max-load-1 = 24
-  ```
-- [ ] `sudo systemctl enable watchdog && sudo systemctl start watchdog`
+- [x] Add to `/boot/firmware/config.txt`: `dtparam=watchdog=on`
+- [x] Installed watchdog daemon: `sudo apt install -y watchdog`
+- [x] Configured `/etc/watchdog.conf`: device, timeout=15, max-load-1=24
+- [x] `sudo systemctl enable watchdog && sudo systemctl start watchdog` — active (running)
 
 ---
 
-## 5. Format and Mount USB Flash Drive
+## 5. Format and Mount USB Flash Drive ✓
 
-- [ ] Plug SanDisk Ultra Fit into Pi USB port 1
-- [ ] Find the device: `lsblk` — note the device name (e.g. `/dev/sda`)
-- [ ] Format as ext4:
-  ```bash
-  sudo mkfs.ext4 -L obd-data /dev/sda1
-  ```
-- [ ] Get UUID: `sudo blkid /dev/sda1` — copy the UUID
-- [ ] Add to `/etc/fstab`:
-  ```
-  UUID=<your-uuid>  /mnt/usb  ext4  defaults,noatime  0  2
-  ```
-- [ ] `sudo mkdir -p /mnt/usb && sudo mount -a`
-- [ ] Confirm mounted: `df -h /mnt/usb`
-- [ ] Create directories:
-  ```bash
-  sudo mkdir -p /mnt/usb/data /mnt/usb/logs
-  sudo chown -R pi:pi /mnt/usb/data /mnt/usb/logs
-  ```
-- [ ] Reboot and confirm USB auto-mounts: `ls /mnt/usb/`
+- [x] SanDisk Ultra Fit plugged into Pi USB port — shows as `sda1` (28.7G)
+- [x] Formatted as ext4: `sudo mkfs.ext4 -L obd-data /dev/sda1`
+- [x] UUID: `1cef0a38-78c6-41cb-92e8-6fbad43bb9c8`
+- [x] Added to `/etc/fstab`: `UUID=1cef0a38-... /mnt/usb ext4 defaults,noatime 0 2`
+- [x] `sudo systemctl daemon-reload && sudo mount -a` (daemon-reload required on Bookworm)
+- [x] Created `/mnt/usb/data` and `/mnt/usb/logs`, owned by `balu:balu`
+- [x] Rebooted — auto-mounts confirmed: `ls /mnt/usb/` shows `data logs lost+found`
 
 ---
 

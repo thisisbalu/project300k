@@ -42,6 +42,7 @@ from logger import logger
 
 RESTART_COUNT_PATH   = "/mnt/usb/data/restart_count"
 RECONNECT_COUNT_PATH = "/mnt/usb/data/reconnect_count"
+RTC_OK_PATH          = "/mnt/usb/data/rtc_ok"
 CPU_TEMP_PATH        = "/sys/class/thermal/thermal_zone0/temp"
 USB_MOUNT_PATH       = "/mnt/usb"
 BT_ADAPTER_PATH      = "/sys/class/bluetooth/hci0"
@@ -97,6 +98,59 @@ def read_reconnect_count() -> int:
     try:
         if os.path.exists(RECONNECT_COUNT_PATH):
             with open(RECONNECT_COUNT_PATH) as f:
+                return int(f.read().strip())
+    except (ValueError, OSError):
+        pass
+    return 0
+
+
+def write_rtc_ok(ok: int) -> None:
+    """Persist the RTC OSF check result so the sync script can report it.
+
+    Called once in main.py after check_rtc(). The sync script runs as a
+    separate process and cannot access the boot-time RTC result from memory.
+    Without this file, every health snapshot would default to rtc_ok=1 even
+    when the DS3231 coin cell is dead.
+
+    Write failures are logged but not fatal — rtc_ok is best-effort.
+    """
+    try:
+        with open(RTC_OK_PATH, "w") as f:
+            f.write(str(ok))
+            f.flush()
+            os.fsync(f.fileno())
+    except OSError as e:
+        logger.warning(f"Could not write rtc_ok: {e}")
+
+
+def read_rtc_ok() -> int:
+    """Read the RTC OSF result written by main.py on boot.
+
+    Returns 1 (clock assumed OK) if the file is missing — this is the safe
+    default because a missing file means either first boot (USB not yet
+    mounted) or the write failed, not a confirmed clock failure.
+    """
+    try:
+        if os.path.exists(RTC_OK_PATH):
+            with open(RTC_OK_PATH) as f:
+                return int(f.read().strip())
+    except (ValueError, OSError):
+        pass
+    return 1
+
+
+def read_restart_count() -> int:
+    """Read the collector restart count written by main.py on every boot.
+
+    The sync script runs as a separate process and cannot access the in-memory
+    count. main.py calls increment_restart_count() on boot which persists the
+    value; this function reads it without incrementing for health snapshots.
+
+    Returns 0 if the file is missing (first boot or USB not mounted).
+    """
+    try:
+        if os.path.exists(RESTART_COUNT_PATH):
+            with open(RESTART_COUNT_PATH) as f:
                 return int(f.read().strip())
     except (ValueError, OSError):
         pass

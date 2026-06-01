@@ -36,17 +36,13 @@ def _null_response():
 
 @pytest.fixture
 def tm(db_conn):
-    """TripManager with mocked QueueWriter and OBDConnection."""
+    """TripManager with mocked QueueWriter."""
     from trip import TripManager
 
     mock_qw = MagicMock()
     mock_qw.conn = db_conn
 
-    mock_obd = MagicMock()
-    mock_obd.is_connected = False
-
-    manager = TripManager(mock_qw, mock_obd)
-    return manager
+    return TripManager(mock_qw)
 
 
 # ---------------------------------------------------------------------------
@@ -323,31 +319,40 @@ class TestDispatchDtcScan:
             tm._dispatch_dtc_scan("fake-trip-id", "trip_start")
         assert started.is_set()
 
-    def test_scan_skipped_when_not_connected(self, tm, caplog):
+    def test_scan_skipped_when_dtc_query_not_wired(self, tm, caplog):
         import logging
-        tm._obd_connection.is_connected = False
+        # _dtc_query_fn defaults to None — scan is skipped before collector is wired
+        with caplog.at_level(logging.WARNING, logger="obd-collector"):
+            tm._scan_dtc("fake-id", "trip_start")
+        assert "DTC scan skipped" in caplog.text
+
+    def test_scan_skipped_when_query_returns_none(self, tm, caplog):
+        import logging
+        # query_sync returns None when the async connection is not available
+        tm._dtc_query_fn = MagicMock(return_value=None)
         with caplog.at_level(logging.WARNING, logger="obd-collector"):
             tm._scan_dtc("fake-id", "trip_start")
         assert "DTC scan skipped" in caplog.text
 
     def test_scan_logs_clean_when_no_dtcs(self, tm, caplog):
         import logging
-        tm._obd_connection.is_connected = True
-        mock_resp = MagicMock()
-        mock_resp.is_null.return_value = False
-        mock_resp.value = []  # empty — no DTCs
-        tm._obd_connection.connection.query.return_value = mock_resp
+        clean = MagicMock()
+        clean.is_null.return_value = False
+        clean.value = []
+        # Same empty response returned for both Mode 03 and Mode 07
+        tm._dtc_query_fn = MagicMock(return_value=clean)
         with caplog.at_level(logging.INFO, logger="obd-collector"):
             tm._scan_dtc("fake-id", "trip_start")
         assert "clean" in caplog.text
 
-    def test_scan_enqueues_dtc_rows(self, tm, caplog):
-        import logging
-        tm._obd_connection.is_connected = True
-        mock_resp = MagicMock()
-        mock_resp.is_null.return_value = False
-        mock_resp.value = [("P0300", "Random Misfire"), ("P0171", "Lean")]
-        tm._obd_connection.connection.query.return_value = mock_resp
+    def test_scan_enqueues_stored_dtc_rows(self, tm):
+        stored_resp = MagicMock()
+        stored_resp.is_null.return_value = False
+        stored_resp.value = [("P0300", "Random Misfire"), ("P0171", "Lean")]
+        pending_resp = MagicMock()
+        pending_resp.is_null.return_value = False
+        pending_resp.value = []
+        tm._dtc_query_fn = MagicMock(side_effect=[stored_resp, pending_resp])
         tm._scan_dtc("fake-id", "trip_end")
         assert tm._queue_writer.enqueue.call_count == 2
         _, row = tm._queue_writer.enqueue.call_args_list[0][0]
@@ -355,20 +360,38 @@ class TestDispatchDtcScan:
         assert row["scan_trigger"] == "trip_end"
         assert row["status"] == "stored"
 
+    def test_scan_enqueues_pending_dtc_rows(self, tm):
+        stored_resp = MagicMock()
+        stored_resp.is_null.return_value = False
+        stored_resp.value = []
+        pending_resp = MagicMock()
+        pending_resp.is_null.return_value = False
+        pending_resp.value = [("P0420", "Catalyst Efficiency Below Threshold")]
+        tm._dtc_query_fn = MagicMock(side_effect=[stored_resp, pending_resp])
+        tm._scan_dtc("fake-id", "trip_start")
+        assert tm._queue_writer.enqueue.call_count == 1
+        _, row = tm._queue_writer.enqueue.call_args[0]
+        assert row["code"] == "P0420"
+        assert row["status"] == "pending"
+        assert row["scan_trigger"] == "trip_start"
+
     def test_scan_null_response_logs_clean(self, tm, caplog):
         import logging
-        tm._obd_connection.is_connected = True
         mock_resp = MagicMock()
         mock_resp.is_null.return_value = True
-        tm._obd_connection.connection.query.return_value = mock_resp
+        tm._dtc_query_fn = MagicMock(return_value=mock_resp)
         with caplog.at_level(logging.INFO, logger="obd-collector"):
             tm._scan_dtc("fake-id", "trip_start")
         assert "clean" in caplog.text
 
     def test_scan_exception_logged(self, tm, caplog):
         import logging
-        tm._obd_connection.is_connected = True
-        tm._obd_connection.connection.query.side_effect = Exception("serial error")
+        tm._dtc_query_fn = MagicMock(side_effect=Exception("serial error"))
         with caplog.at_level(logging.ERROR, logger="obd-collector"):
             tm._scan_dtc("fake-id", "trip_end")
         assert "DTC scan failed" in caplog.text
+
+    def test_set_dtc_query_wires_callable(self, tm):
+        fn = MagicMock()
+        tm.set_dtc_query(fn)
+        assert tm._dtc_query_fn is fn

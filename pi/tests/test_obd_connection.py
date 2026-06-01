@@ -35,7 +35,9 @@ class TestConnect:
         with patch("obd_connection.obd.OBD", return_value=mock_obd):
             obd_conn.connect()
 
-        assert obd_conn._connection is mock_obd
+        # Connection is verified then closed immediately — Collector owns the port.
+        mock_obd.close.assert_called_once()
+        assert obd_conn._connection is None
 
     def test_uses_fast_false(self, obd_conn):
         mock_obd = MagicMock()
@@ -69,7 +71,8 @@ class TestConnect:
              patch("obd_connection.time.sleep"):
             obd_conn.connect()
 
-        assert obd_conn._connection is good_obd
+        good_obd.close.assert_called_once()
+        assert obd_conn._connection is None
         assert call_count == 3
 
     def test_raises_keyboard_interrupt_through_retry(self, obd_conn):

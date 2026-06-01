@@ -137,6 +137,7 @@ class TestMain:
         mock_tm = MagicMock()
 
         with patch("main.smbus2.SMBus") as mock_smbus, \
+             patch("main.health.write_rtc_ok"), \
              patch("main.health.increment_restart_count", return_value=1), \
              patch("main.get_connection", return_value=mock_conn), \
              patch("main.init_schema"), \
@@ -169,6 +170,7 @@ class TestMain:
 
         with patch("main.signal.signal", side_effect=fake_signal), \
              patch("main.smbus2.SMBus") as mock_smbus, \
+             patch("main.health.write_rtc_ok"), \
              patch("main.health.increment_restart_count", return_value=1), \
              patch("main.get_connection", return_value=MagicMock()), \
              patch("main.init_schema"), \

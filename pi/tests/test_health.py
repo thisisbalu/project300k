@@ -10,6 +10,74 @@ import pytest
 # increment_restart_count()
 # ---------------------------------------------------------------------------
 
+class TestRtcOkFile:
+    def test_write_then_read_roundtrip(self, tmp_path):
+        from health import write_rtc_ok, read_rtc_ok
+        path = str(tmp_path / "rtc_ok")
+        with patch("health.RTC_OK_PATH", path):
+            write_rtc_ok(0)
+            assert read_rtc_ok() == 0
+
+    def test_read_returns_1_when_file_missing(self, tmp_path):
+        from health import read_rtc_ok
+        with patch("health.RTC_OK_PATH", str(tmp_path / "nonexistent")):
+            assert read_rtc_ok() == 1
+
+    def test_read_returns_1_on_corrupt_file(self, tmp_path):
+        from health import read_rtc_ok
+        path = str(tmp_path / "rtc_ok")
+        open(path, "w").write("bad")
+        with patch("health.RTC_OK_PATH", path):
+            assert read_rtc_ok() == 1
+
+    def test_write_failure_logs_warning(self, tmp_path, caplog):
+        import logging
+        from health import write_rtc_ok
+        with patch("health.RTC_OK_PATH", "/nonexistent/dir/file"), \
+             caplog.at_level(logging.WARNING, logger="obd-collector"):
+            write_rtc_ok(1)
+        assert "Could not write rtc_ok" in caplog.text
+
+    def test_write_1_and_0_roundtrip(self, tmp_path):
+        from health import write_rtc_ok, read_rtc_ok
+        path = str(tmp_path / "rtc_ok")
+        with patch("health.RTC_OK_PATH", path):
+            write_rtc_ok(1)
+            assert read_rtc_ok() == 1
+            write_rtc_ok(0)
+            assert read_rtc_ok() == 0
+
+
+class TestRestartCountFile:
+    def test_read_returns_0_when_file_missing(self, tmp_path):
+        from health import read_restart_count
+        with patch("health.RESTART_COUNT_PATH", str(tmp_path / "nonexistent")):
+            assert read_restart_count() == 0
+
+    def test_write_then_read_roundtrip(self, tmp_path):
+        from health import increment_restart_count, read_restart_count
+        path = str(tmp_path / "restart_count")
+        open(path, "w").write("4")
+        with patch("health.RESTART_COUNT_PATH", path):
+            increment_restart_count()   # bumps to 5
+            assert read_restart_count() == 5
+
+    def test_read_does_not_increment(self, tmp_path):
+        from health import read_restart_count
+        path = str(tmp_path / "restart_count")
+        open(path, "w").write("3")
+        with patch("health.RESTART_COUNT_PATH", path):
+            assert read_restart_count() == 3
+            assert read_restart_count() == 3   # second call still returns 3
+
+    def test_corrupt_file_returns_0(self, tmp_path):
+        from health import read_restart_count
+        path = str(tmp_path / "restart_count")
+        open(path, "w").write("notanumber")
+        with patch("health.RESTART_COUNT_PATH", path):
+            assert read_restart_count() == 0
+
+
 class TestReconnectCountFile:
     def test_read_returns_0_when_file_missing(self, tmp_path):
         from health import read_reconnect_count

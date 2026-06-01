@@ -42,8 +42,16 @@ else
     echo "    Config already exists — skipping"
 fi
 
+echo "==> Checking VERSION file"
+if [ ! -f "$PI_DIR/VERSION" ]; then
+    echo "1.0.0" > "$PI_DIR/VERSION"
+    echo "    VERSION file created at $PI_DIR/VERSION"
+else
+    echo "    VERSION already exists: $(cat "$PI_DIR/VERSION")"
+fi
+
 echo "==> Setting up Python virtualenv"
-python3.11 -m venv "$PI_DIR/venv"
+python3 -m venv "$PI_DIR/venv"
 "$PI_DIR/venv/bin/pip" install --upgrade pip
 "$PI_DIR/venv/bin/pip" install -r "$PI_DIR/requirements.txt"
 

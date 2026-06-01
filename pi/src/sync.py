@@ -162,7 +162,8 @@ def _write_health_snapshot(conn: sqlite3.Connection) -> None:
 
     metrics = health.collect(
         obd_reconnect_count=health.read_reconnect_count(),
-        restart_count=0,  # already incremented by main.py on boot
+        restart_count=health.read_restart_count(),
+        rtc_ok=health.read_rtc_ok(),
     )
     metrics["rows_collected"] = rows_pending
 

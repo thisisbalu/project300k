@@ -9,13 +9,21 @@ ensuring all database access is serialised through the queue.
 All PIDs are registered from ALL_PIDS in obd_commands.py, so adding or
 removing a PID requires no changes here — only in obd_commands.py.
 
+Row shape — one combined row per table per interval tick:
+    All PIDs in the same table share a per-table buffer. Each callback
+    accumulates its column value into the buffer. When the table's interval_s
+    elapses, the buffer is flushed as a single combined row — obd_1s gets one
+    row/second with rpm, speed_kmh, throttle_pct, load_pct all populated, not
+    four separate sparse rows. This matches the schema design intent.
+
 Each callback:
     1. Receives an OBDResponse from python-obd
-    2. Checks trip_id — skips enqueue if no active trip (avoids NOT NULL violation)
+    2. Checks trip_id — skips if no active trip (avoids NOT NULL violation)
     3. Skips 1s/5s PIDs when trip_manager.is_paused (RPM=0 for >30s)
     4. Extracts the magnitude value (None if response is null/error)
-    5. Builds a row dict: {id (UUID), trip_id, timestamp, <column>: value}
-    6. Calls queue_writer.enqueue(table, row)
+    5. If the table's interval_s has elapsed: flush the buffer as one combined
+       row via queue_writer.enqueue(), then reset the buffer and timer
+    6. Accumulates this PID's value into the buffer for the current window
 
 NULL values are stored honestly — a spike in NULLs for a specific PID
 is itself a diagnostic signal (BT glitch, wrong Mode 22 address, sensor fault).
@@ -61,9 +69,15 @@ class Collector:
     to QueueWriter. Monitors the connection health and reconnects on drop.
 
     Attributes:
-        _async_conn:     python-obd Async connection managing the polling loop.
-        _stop_event:     Signals the monitor thread to stop.
-        _monitor_thread: Background thread checking connection health every 10s.
+        _async_conn:        python-obd Async connection managing the polling loop.
+        _table_buffer:      Per-table dict of accumulated column values for the
+                            current interval window. Flushed as one combined row
+                            when the table's interval_s elapses.
+        _table_last_flush:  Monotonic timestamp of the last flush per table.
+                            Reset on each (re)connect so the first window starts
+                            cleanly.
+        _stop_event:        Signals the monitor thread to stop.
+        _monitor_thread:    Background thread checking connection health every 10s.
     """
 
     def __init__(self, queue_writer, trip_manager, obd_connection) -> None:
@@ -79,7 +93,12 @@ class Collector:
         self._trip_manager = trip_manager
         self._obd_connection = obd_connection
         self._async_conn: obd.Async | None = None
-        self._last_enqueue: dict[str, float] = {}
+        self._table_buffer: dict[str, dict] = {}
+        self._table_last_flush: dict[str, float] = {}
+        # Serialises concurrent query_sync() calls — prevents two DTC scans
+        # (one at trip_start and one at trip_end if they overlap) from racing
+        # to stop/restart the same async connection.
+        self._dtc_lock = threading.Lock()
         self._stop_event = threading.Event()
         self._monitor_thread: threading.Thread | None = None
 
@@ -103,7 +122,8 @@ class Collector:
             name="obd-monitor",
         )
         self._monitor_thread.start()
-        logger.info(f"Collector started — {len(ALL_PIDS)} PIDs active")
+        tables = {pid.table for pid in ALL_PIDS}
+        logger.info(f"Collector started — {len(ALL_PIDS)} PIDs active across {len(tables)} tables")
 
     def stop(self) -> None:
         """Stop the monitor thread, all watchers, and close the async polling loop."""
@@ -115,6 +135,45 @@ class Collector:
             self._monitor_thread.join(timeout=5)
         logger.info("Collector stopped")
 
+    @property
+    def is_async_connected(self) -> bool:
+        """True if the async OBD connection is currently active."""
+        return self._async_conn is not None and self._async_conn.is_connected()
+
+    def query_sync(self, command: obd.OBDCommand) -> obd.OBDResponse | None:
+        """Stop the async loop, issue a synchronous OBD query, restart the loop.
+
+        Used by TripManager._scan_dtc() for DTC scans at trip boundaries.
+        Stopping the async loop before querying prevents both from competing
+        for bytes on the same /dev/rfcomm0 serial device simultaneously —
+        without this, the async polling thread consumes the DTC response bytes
+        and the query() call times out.
+
+        The polling gap while the scan runs is brief (< 5s for GET_DTC) and
+        only occurs at trip start/end, so the impact on continuous data
+        collection is minimal.
+
+        Returns:
+            OBDResponse on success, None if not connected or on error.
+        """
+        if not self.is_async_connected:
+            return None
+        with self._dtc_lock:
+            try:
+                self._async_conn.stop()
+                response = self._async_conn.query(command)
+                self._async_conn.start()
+                return response
+            except Exception as e:
+                logger.error(f"DTC query error: {e}")
+                # Best-effort restart so data collection continues.
+                try:
+                    if self._async_conn is not None:
+                        self._async_conn.start()
+                except Exception:
+                    pass
+                return None
+
     def _connect_and_watch(self) -> None:
         """Open obd.Async and register all PID watchers.
 
@@ -125,13 +184,15 @@ class Collector:
         # not by wrapping an existing connection object.
         self._async_conn = obd.Async(config.OBD_PORT, fast=False, timeout=30)
 
-        # Track last-enqueue time per PID for interval enforcement.
-        # python-obd 0.7.3 does not support per-watcher polling intervals —
-        # all watched PIDs are polled at the async loop's natural rate (~1Hz).
-        # The time-filter in _make_callback() enforces the declared interval_s
-        # by skipping enqueue if insufficient time has elapsed since last write.
+        # Reset per-table buffers and flush timers on every (re)connect.
+        # Setting last_flush to 0.0 means the first callback for each table
+        # sees elapsed >> interval_s, resets the timer, and starts a clean
+        # window — no stale data from a previous connection is carried forward.
         for pid in ALL_PIDS:
-            self._last_enqueue.setdefault(pid.command.name, 0.0)
+            self._table_buffer[pid.table] = {}
+            self._table_last_flush[pid.table] = 0.0
+
+        for pid in ALL_PIDS:
             self._async_conn.watch(
                 pid.command,
                 callback=self._make_callback(pid),
@@ -190,56 +251,48 @@ class Collector:
                     logger.error(f"Async OBD reconnect failed: {e}")
 
     def _make_callback(self, pid: PIDConfig):
-        """Return a closure that enqueues one OBD reading to SQLite.
+        """Return a closure that buffers OBD readings and flushes combined rows.
 
-        The closure captures the PIDConfig so the same factory produces
-        correctly routed callbacks for every PID without repetition.
+        The closure captures the PIDConfig. All PIDs sharing the same table
+        accumulate their column values into a shared per-table buffer. When
+        the table's interval_s elapses the buffer is flushed as one combined
+        row — so obd_1s gets a single row/second with all four columns
+        populated rather than four separate single-column sparse rows.
 
-        Skips enqueue when no trip is active (current_trip_id is None) to
-        avoid inserting rows that would violate the trip_id NOT NULL constraint.
+        python-obd 0.7.3 fires all callbacks at the async loop rate (~1Hz).
+        The interval is enforced at the table level: the buffer is only flushed
+        once per interval_s, regardless of how many times callbacks fire.
 
-        Skips 1s and 5s PIDs when polling is paused (RPM=0 for >30s) —
-        implements the architecture's intent of suppressing fast-tier data
-        while the engine is off. The 30s tier (battery_v, fuel level) is
-        unaffected and continues to run for resting health data.
+        Flush timing:
+            The first callback for a table after (re)connect resets the window
+            timer and discards any empty buffer — no row is emitted until the
+            first full window completes. This gives all PIDs in the tier a
+            chance to contribute a value before the first flush.
 
-        The value extracted from the OBDResponse is the raw magnitude
-        (float/int) without units — units are encoded in the column name
-        (e.g. coolant_temp_c, battery_v). None is stored as NULL when the
-        response is empty or the ECU returned an error.
+        NULL handling:
+            None is accumulated for bad/missing responses and appears as NULL
+            in the flushed row. A NULL spike for a specific column is a
+            diagnostic signal (sensor fault, BT glitch, wrong Mode 22 address).
 
         Args:
             pid: PIDConfig carrying table, column, and interval for this PID.
 
         Returns:
-            Callable that accepts an OBDResponse and enqueues the row.
+            Callable that accepts an OBDResponse and accumulates/flushes.
         """
+        table      = pid.table
+        column     = pid.column
+        interval_s = pid.interval_s
+
         def callback(response: obd.OBDResponse) -> None:
-            # Skip rows when no trip is active — inserting trip_id=NULL
-            # would violate the NOT NULL constraint on all OBD tables.
             trip_id = self._trip_manager.current_trip_id
             if trip_id is None:
                 return
 
-            # Suppress 1s and 5s PIDs when RPM has been 0 for >30s.
-            # The 30s tier (battery_v, fuel level, ambient temp) is not
-            # suppressed — those slow-moving signals are useful at rest.
-            if self._trip_manager.is_paused and pid.interval_s < 30:
+            if self._trip_manager.is_paused and interval_s < 30:
                 return
-
-            # Enforce polling interval — python-obd fires callbacks at the
-            # async loop rate (~1Hz) regardless of PID tier. Skip enqueue if
-            # less than interval_s has elapsed since this PID was last written.
-            # This implements the 1s/5s/30s tier architecture without needing
-            # multiple async connections.
-            now_mono = time.monotonic()
-            if now_mono - self._last_enqueue[pid.command.name] < pid.interval_s:
-                return
-            self._last_enqueue[pid.command.name] = now_mono
 
             # Extract raw magnitude — None if response has no value.
-            # Storing None as NULL is intentional: a NULL spike for a specific
-            # PID is a diagnostic signal (sensor fault, BT glitch, wrong address).
             value = None
             if response is not None and not response.is_null():
                 value = (
@@ -248,13 +301,28 @@ class Collector:
                     else response.value
                 )
 
-            row = {
-                "id": str(uuid.uuid4()),
-                "trip_id": trip_id,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                pid.column: value,
-                "synced": 0,
-            }
-            self._queue_writer.enqueue(pid.table, row)
+            now_mono = time.monotonic()
+            buf      = self._table_buffer[table]
+
+            # Flush the completed window when interval_s has elapsed.
+            # Always reset the timer (even on an empty first window) so
+            # subsequent callbacks see a valid elapsed baseline.
+            if now_mono - self._table_last_flush[table] >= interval_s:
+                if buf:
+                    row = {
+                        "id":        str(uuid.uuid4()),
+                        "trip_id":   trip_id,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "synced":    0,
+                        **buf,
+                    }
+                    self._queue_writer.enqueue(table, row)
+                self._table_buffer[table]     = {}
+                self._table_last_flush[table] = now_mono
+
+            # Accumulate into the current window — overwrites if the same
+            # column fires multiple times before the window closes (takes
+            # the most recent value, which is correct for time-series data).
+            self._table_buffer[table][column] = value
 
         return callback

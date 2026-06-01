@@ -120,6 +120,7 @@ def main() -> None:
     logger.info(f"Config loaded: {config}")
 
     rtc_ok = check_rtc()
+    health.write_rtc_ok(rtc_ok)
     restart_count = health.increment_restart_count()
 
     conn = get_connection()
@@ -131,12 +132,16 @@ def main() -> None:
     obd_connection = OBDConnection()
     obd_connection.connect()
 
-    trip_manager = TripManager(queue_writer, obd_connection)
+    trip_manager = TripManager(queue_writer)
     # Collector opens its own obd.Async connection — obd.Async is a subclass
     # of obd.OBD and must be instantiated with a port string, not wrapped
     # around the existing OBDConnection object.
     # obd_connection is passed for reconnect() and reconnect_count tracking.
     collector = Collector(queue_writer, trip_manager, obd_connection)
+    # Wire DTC query callable before start() — TripManager calls query_sync()
+    # for DTC scans at trip boundaries, which stops the async loop to avoid
+    # byte-race contention on /dev/rfcomm0 with the polling thread.
+    trip_manager.set_dtc_query(collector.query_sync)
     collector.start()
 
     # Notify systemd that initialisation is complete and the service is ready.
