@@ -18,8 +18,8 @@
 
 [Unit]
 Description=OBD Collector — Project 300K
-After=network.target bluetooth.target
-Wants=bluetooth.target
+After=network.target rfcomm-connect.service
+Requires=rfcomm-connect.service
 
 [Service]
 Type=notify

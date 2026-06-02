@@ -1,0 +1,34 @@
+# rfcomm-connect.service
+#
+# Establishes and maintains the Bluetooth RFCOMM connection to the OBDLink MX+.
+# Runs rfcomm connect which blocks for the lifetime of the connection — systemd
+# treats this as a persistent service. If the connection drops, Restart=on-failure
+# reconnects automatically.
+#
+# obd-collector.service depends on this service via After= and Requires= so the
+# collector never starts without an active rfcomm0 connection.
+
+[Unit]
+Description=RFCOMM connection to OBDLink MX+
+After=bluetooth.target
+Requires=bluetooth.service
+# Restart this service if obd-collector fails — the connection may be the cause.
+
+[Service]
+Type=simple
+# Unblock rfkill and bring up hci0 before connecting.
+ExecStartPre=/usr/sbin/rfkill unblock bluetooth
+ExecStartPre=/usr/bin/hciconfig hci0 up
+# rfcomm connect blocks until disconnected — this is intentional.
+ExecStart=/usr/bin/rfcomm connect 0 00:04:3E:8A:94:4C
+# Release the device cleanly on stop so the next start can bind it.
+ExecStopPost=/usr/bin/rfcomm release 0
+Restart=on-failure
+RestartSec=10
+# Give hci0 time to come up before attempting connect.
+TimeoutStartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
