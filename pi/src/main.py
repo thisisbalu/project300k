@@ -25,6 +25,7 @@ import signal
 import sys
 import time
 
+import psutil
 import sdnotify
 import health
 from collector import Collector
@@ -72,6 +73,41 @@ def check_rtc() -> int:
             "Check wiring and raspi-config I2C setting. Relying on fake-hwclock for timestamps."
         )
         return 0
+
+
+def _log_heartbeat(collector, uptime_start: float) -> None:
+    """Log a 5-minute heartbeat with Pi vitals and polling health."""
+    uptime_s = int(time.monotonic() - uptime_start)
+    uptime_str = f"{uptime_s // 60}m {uptime_s % 60}s"
+
+    try:
+        with open(health.CPU_TEMP_PATH) as f:
+            cpu_str = f"{int(f.read().strip()) / 1000.0:.1f}°C"
+    except OSError:
+        cpu_str = "N/A"
+
+    mem = psutil.virtual_memory()
+    mem_str = f"{mem.available // (1024 * 1024)}/{mem.total // (1024 * 1024)}MB"
+
+    try:
+        disk = psutil.disk_usage("/mnt/usb")
+        disk_str = f"{disk.free / (1024 ** 3):.1f}/{disk.total / (1024 ** 3):.1f}GB"
+    except OSError:
+        disk_str = "N/A"
+
+    rpm = collector.latest("rpm")
+    speed = collector.latest("speed_kmh")
+    rpm_str = str(int(rpm)) if rpm is not None else "N/A"
+    speed_str = str(int(speed)) if speed is not None else "N/A"
+
+    active, total = collector.polling_health(window_s=300)
+
+    logger.info(
+        f"Heartbeat — uptime: {uptime_str} | cpu: {cpu_str} | "
+        f"mem: {mem_str} | disk: {disk_str} | "
+        f"rpm: {rpm_str} | speed: {speed_str}km/h | "
+        f"pids: {active}/{total}"
+    )
 
 
 def _handle_sigterm(sig, frame) -> None:
@@ -135,10 +171,15 @@ def main() -> None:
     # systemd kills and restarts the service. The 30s ping interval gives
     # a 2x safety margin so a single delayed iteration never triggers a restart.
     # If this loop stalls (deadlock, hung thread), the watchdog fires correctly.
+    _heartbeat_ticks = 0
+    _uptime_start = time.monotonic()
     try:
         while True:
             notifier.notify("WATCHDOG=1")
             logger.info("Watchdog ping sent")
+            _heartbeat_ticks += 1
+            if _heartbeat_ticks % 10 == 0:
+                _log_heartbeat(collector, _uptime_start)
             time.sleep(30)
     except KeyboardInterrupt:
         logger.info("Shutting down — draining queue")

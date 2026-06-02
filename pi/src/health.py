@@ -43,7 +43,7 @@ from logger import logger
 RESTART_COUNT_PATH   = "/mnt/usb/data/restart_count"
 RECONNECT_COUNT_PATH = "/mnt/usb/data/reconnect_count"
 RTC_OK_PATH          = "/mnt/usb/data/rtc_ok"
-CPU_TEMP_PATH        = "/sys/class/thermal/thermal_zone0/temp"
+CPU_TEMP_PATH        = "/sys/class/thermal/thermal_zone0/temp"  # exported for heartbeat
 USB_MOUNT_PATH       = "/mnt/usb"
 BT_ADAPTER_PATH      = "/sys/class/bluetooth/hci0"
 VERSION_PATH         = "/home/balu/project300k/pi/VERSION"

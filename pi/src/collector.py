@@ -95,6 +95,12 @@ class Collector:
         self._async_conn: obd.Async | None = None
         self._table_buffer: dict[str, dict] = {}
         self._table_last_flush: dict[str, float] = {}
+        # Tracks the monotonic timestamp of the last non-NULL response per column.
+        # Written from the OBD async thread, read from the main thread for heartbeat.
+        # Single-key dict writes are atomic under the GIL — no lock needed.
+        self._pid_last_seen: dict[str, float] = {}
+        # Tracks the most recent non-NULL value per column for heartbeat display.
+        self._latest: dict[str, object] = {}
         # Serialises concurrent query_sync() calls — prevents two DTC scans
         # (one at trip_start and one at trip_end if they overlap) from racing
         # to stop/restart the same async connection.
@@ -191,6 +197,8 @@ class Collector:
         for pid in ALL_PIDS:
             self._table_buffer[pid.table] = {}
             self._table_last_flush[pid.table] = 0.0
+        self._pid_last_seen.clear()
+        self._latest.clear()
 
         for pid in ALL_PIDS:
             self._async_conn.watch(
@@ -250,6 +258,37 @@ class Collector:
                 except Exception as e:
                     logger.error(f"Async OBD reconnect failed: {e}")
 
+    def polling_health(self, window_s: int = 300) -> tuple[int, int]:
+        """Return (active_pids, total_pids) for the given look-back window.
+
+        A PID is considered active if it returned a non-NULL value within
+        the last window_s seconds. Used by the heartbeat log to surface
+        consistently-failing PIDs without querying SQLite.
+
+        Args:
+            window_s: Look-back window in seconds. Default 300s (5 minutes).
+
+        Returns:
+            Tuple of (pids_seen_in_window, total_pids_registered).
+        """
+        cutoff = time.monotonic() - window_s
+        active = sum(1 for t in self._pid_last_seen.values() if t >= cutoff)
+        return active, len(ALL_PIDS)
+
+    def latest(self, column: str) -> object:
+        """Return the most recent non-NULL value for a column, or None.
+
+        Used by the heartbeat log to show current rpm and speed_kmh without
+        querying SQLite or coupling main.py to the internal buffer structure.
+
+        Args:
+            column: Column name (e.g. 'rpm', 'speed_kmh').
+
+        Returns:
+            Most recent non-NULL value, or None if never seen.
+        """
+        return self._latest.get(column)
+
     def _make_callback(self, pid: PIDConfig):
         """Return a closure that buffers OBD readings and flushes combined rows.
 
@@ -302,6 +341,10 @@ class Collector:
                 )
 
             now_mono = time.monotonic()
+
+            if value is not None:
+                self._pid_last_seen[column] = now_mono
+                self._latest[column] = value
             buf      = self._table_buffer[table]
 
             # Flush the completed window when interval_s has elapsed.

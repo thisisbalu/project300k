@@ -362,3 +362,78 @@ class TestMakeCallback:
 
         mock_qw.enqueue.assert_not_called()
         assert c._table_last_flush["obd_1s"] == 100.0
+
+    def test_non_null_value_updates_pid_last_seen_and_latest(self):
+        """Non-NULL callback updates _pid_last_seen and _latest."""
+        c, _, _ = self._make_collector(trip_id="trip-1")
+        self._init_table(c, "obd_1s", last_flush=0.0)
+        pid = self._make_pid(table="obd_1s", column="rpm", interval_s=1)
+        cb = c._make_callback(pid)
+
+        with patch("collector.time.monotonic", return_value=100.0):
+            cb(self._make_response(1500))
+
+        assert c._pid_last_seen["rpm"] == 100.0
+        assert c._latest["rpm"] == 1500
+
+    def test_null_value_does_not_update_pid_last_seen(self):
+        """NULL response must not update _pid_last_seen or _latest."""
+        c, _, _ = self._make_collector(trip_id="trip-1")
+        self._init_table(c, "obd_1s", last_flush=0.0)
+        pid = self._make_pid(table="obd_1s", column="rpm", interval_s=1)
+        cb = c._make_callback(pid)
+
+        with patch("collector.time.monotonic", return_value=100.0):
+            cb(self._make_response(is_null=True))
+
+        assert "rpm" not in c._pid_last_seen
+        assert "rpm" not in c._latest
+
+
+# ---------------------------------------------------------------------------
+# polling_health() / latest()
+# ---------------------------------------------------------------------------
+
+class TestPollingHealth:
+    def _make_collector(self):
+        from collector import Collector
+        return Collector(MagicMock(), MagicMock(), MagicMock())
+
+    def test_polling_health_counts_pids_within_window(self):
+        from collector import ALL_PIDS
+        c = self._make_collector()
+        now = 1000.0
+        # Mark 3 PIDs as seen within the last 300s
+        c._pid_last_seen = {"rpm": now - 10, "speed_kmh": now - 50, "throttle_pct": now - 290}
+
+        with patch("collector.time.monotonic", return_value=now):
+            active, total = c.polling_health(window_s=300)
+
+        assert active == 3
+        assert total == len(ALL_PIDS)
+
+    def test_polling_health_excludes_stale_pids(self):
+        c = self._make_collector()
+        now = 1000.0
+        c._pid_last_seen = {"rpm": now - 10, "speed_kmh": now - 400}  # speed_kmh stale
+
+        with patch("collector.time.monotonic", return_value=now):
+            active, _ = c.polling_health(window_s=300)
+
+        assert active == 1
+
+    def test_polling_health_returns_zero_when_no_pids_seen(self):
+        from collector import ALL_PIDS
+        c = self._make_collector()
+        active, total = c.polling_health(window_s=300)
+        assert active == 0
+        assert total == len(ALL_PIDS)
+
+    def test_latest_returns_most_recent_value(self):
+        c = self._make_collector()
+        c._latest["rpm"] = 1800
+        assert c.latest("rpm") == 1800
+
+    def test_latest_returns_none_for_unseen_column(self):
+        c = self._make_collector()
+        assert c.latest("rpm") is None
