@@ -94,45 +94,16 @@ Connect DS3231 to Pi 3B GPIO header (4 wires):
 
 ---
 
-## 6. Pair OBDLink MX+
+## 6. Pair OBDLink MX+ ✓
 
-Plug TP-Link UB500 into Pi USB port 2. Engine must be on (or ignition in accessory mode) for OBDLink to be discoverable.
-
-- [ ] Confirm USB dongle is detected:
-  ```bash
-  hciconfig       # should show hci0
-  hcitool scan    # scan for devices — OBDLink should appear
-  ```
-- [ ] Pair via bluetoothctl:
-  ```bash
-  bluetoothctl
-  > power on
-  > agent on
-  > scan on
-  # wait for OBDLink MX+ to appear, note its MAC (e.g. AA:BB:CC:DD:EE:FF)
-  > pair AA:BB:CC:DD:EE:FF
-  > trust AA:BB:CC:DD:EE:FF
-  > quit
-  ```
-- [ ] Bind to rfcomm0:
-  ```bash
-  sudo rfcomm bind 0 AA:BB:CC:DD:EE:FF
-  ls -la /dev/rfcomm0   # confirm exists
-  ```
-- [ ] Set up rfcomm bind on boot — create `/etc/udev/rules.d/99-obdlink.rules`:
-  ```
-  ACTION=="add", KERNEL=="hci0", RUN+="/usr/bin/rfcomm bind 0 AA:BB:CC:DD:EE:FF"
-  ```
-- [ ] Test connection manually:
-  ```bash
-  /home/pi/project300k/pi/venv/bin/python3 -c "
-  import obd
-  conn = obd.OBD('/dev/rfcomm0', fast=False, timeout=30)
-  print('Connected:', conn.is_connected())
-  print('Protocol:', conn.protocol_name())
-  conn.close()
-  "
-  ```
+- [x] USB dongle renumbered to `hci0` after onboard BT disabled (was `hci1` before)
+- [x] Unblocked with `sudo rfkill unblock bluetooth` (rfkill blocked after BT service disabled)
+- [x] `sudo systemctl start bluetooth` needed before bluetoothctl (service is disabled but must be running to pair)
+- [x] Ran `scan on` inside bluetoothctl, then paired: OBDLink MX+ MAC: `00:04:3E:8A:94:4C`
+- [x] Trusted device in bluetoothctl
+- [x] `rfcomm bind` alone is not enough — must use `sudo rfcomm connect 0 00:04:3E:8A:94:4C &` to establish connection
+- [x] Connection confirmed: `Connected: True`, `Protocol: ISO 15765-4 (CAN 11/500)`
+- [x] udev rule created at `/etc/udev/rules.d/99-obdlink.rules` for boot-time bind (full connect behaviour to verify in step 7)
 
 ---
 
