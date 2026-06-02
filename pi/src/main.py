@@ -26,7 +26,6 @@ import sys
 import time
 
 import sdnotify
-import smbus2
 import health
 from collector import Collector
 from config import config
@@ -37,59 +36,40 @@ from storage import get_connection, init_schema
 from trip import TripManager
 
 
-# DS3231 I2C constants
-_DS3231_I2C_ADDRESS = 0x68   # fixed hardware address, not configurable
-_DS3231_STATUS_REG  = 0x0F   # status register contains the OSF flag
-_DS3231_OSF_BIT     = 0x80   # bit 7 of status register — Oscillator Stop Flag
-_I2C_BUS            = 1      # I2C bus 1 on Pi 3B (GPIO pins 2 and 3)
+# When dtoverlay=i2c-rtc,ds3231 is active the kernel rtc-ds1307 driver claims
+# the I2C address — direct smbus2 access is blocked. Check via sysfs instead.
+_RTC_NAME_PATH = "/sys/class/rtc/rtc0/name"
 
 
 def check_rtc() -> int:
-    """Read the DS3231 RTC OSF flag and log a warning if the battery is dead.
+    """Check DS3231 presence via sysfs and log a warning if not found.
 
-    The OSF (Oscillator Stop Flag) is set by the DS3231 when power to the
-    RTC was interrupted — indicating the coin cell battery is dead or missing.
-    When OSF is set, the RTC time since last power loss is unreliable and
-    fake-hwclock takes over as the fallback clock source.
+    The kernel rtc-ds1307 driver claims the DS3231's I2C address once
+    dtoverlay=i2c-rtc,ds3231 is active, so direct smbus2 access is blocked.
+    Sysfs exposes the driver name at /sys/class/rtc/rtc0/name — if it contains
+    'ds1307' the chip is present and the kernel has initialised it successfully.
 
-    Non-fatal — the collector continues regardless. The warning in the log
-    alerts the operator to replace the CR2032 coin cell (every 3 years).
-
-    Two warning conditions:
-        OSF set     — chip found but battery lost power; timestamps may be wrong
-        OSError     — chip not responding on I2C bus (not wired or not enabled)
+    Non-fatal — the collector continues regardless.
 
     Returns:
-        1 if DS3231 is present and OSF is clear (clock reliable).
-        0 if OSF is set or chip not found.
+        1 if DS3231 is present (kernel driver loaded it successfully).
+        0 if rtc0 is missing or is an unexpected driver.
     """
     try:
-        # Context manager guarantees bus.close() on any exit path —
-        # including if read_byte_data() raises, which would skip close()
-        # if the bus were opened manually.
-        with smbus2.SMBus(_I2C_BUS) as bus:
-            status = bus.read_byte_data(_DS3231_I2C_ADDRESS, _DS3231_STATUS_REG)
-
-        if status & _DS3231_OSF_BIT:
-            # OSF is set — RTC lost power at some point since last cleared.
-            # This typically means the CR2032 coin cell is dead or was never
-            # installed. fake-hwclock will provide an approximate time instead.
+        with open(_RTC_NAME_PATH) as f:
+            name = f.read().strip()
+        if "ds1307" not in name:
             logger.warning(
-                "DS3231 OSF flag set — RTC battery may be dead, timestamp accuracy "
-                "not guaranteed. Replace CR2032 coin cell."
+                f"Unexpected RTC driver '{name}' at rtc0 — expected ds1307 (DS3231). "
+                "Timestamps may be unreliable."
             )
             return 0
-
-        logger.info("DS3231 RTC OK — OSF clear, clock is reliable")
+        logger.info("DS3231 RTC OK — clock is reliable")
         return 1
-
     except OSError:
-        # I2C address 0x68 did not respond — DS3231 not wired, not enabled
-        # in raspi-config, or I2C interface not loaded. fake-hwclock is the
-        # only clock source in this case.
         logger.warning(
-            "DS3231 not found on I2C bus — check wiring and raspi-config I2C setting. "
-            "Relying on fake-hwclock for timestamps."
+            "DS3231 not found — /sys/class/rtc/rtc0 not present. "
+            "Check wiring and raspi-config I2C setting. Relying on fake-hwclock for timestamps."
         )
         return 0
 
