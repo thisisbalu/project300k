@@ -100,7 +100,7 @@ def _log_heartbeat(collector, uptime_start: float) -> None:
     rpm_str = str(int(rpm)) if rpm is not None else "N/A"
     speed_str = str(int(speed)) if speed is not None else "N/A"
 
-    active, total = collector.polling_health(window_s=300)
+    active, total = collector.polling_health(window_s=60)
 
     logger.info(
         f"Heartbeat — uptime: {uptime_str} | cpu: {cpu_str} | "
@@ -178,7 +178,7 @@ def main() -> None:
             notifier.notify("WATCHDOG=1")
             logger.info("Watchdog ping sent")
             _heartbeat_ticks += 1
-            if _heartbeat_ticks % 10 == 0:
+            if _heartbeat_ticks % 2 == 0:
                 _log_heartbeat(collector, _uptime_start)
             time.sleep(30)
     except KeyboardInterrupt:
