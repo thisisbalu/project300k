@@ -18,7 +18,7 @@ Requires=bluetooth.service
 Type=simple
 # Unblock rfkill and bring up hci0 before connecting.
 ExecStartPre=/usr/sbin/rfkill unblock bluetooth
-ExecStartPre=/usr/bin/hciconfig hci0 up
+ExecStartPre=-/usr/bin/hciconfig hci0 up
 # rfcomm connect blocks until disconnected — this is intentional.
 ExecStart=/usr/bin/rfcomm connect 0 00:04:3E:8A:94:4C
 # Release the device cleanly on stop so the next start can bind it.
