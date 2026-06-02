@@ -23,7 +23,7 @@ ExecStartPre=-/usr/bin/hciconfig hci0 up
 ExecStart=/usr/bin/rfcomm connect 0 00:04:3E:8A:94:4C
 # Release the device cleanly on stop so the next start can bind it.
 ExecStopPost=/usr/bin/rfcomm release 0
-Restart=on-failure
+Restart=always
 RestartSec=10
 # Give hci0 time to come up before attempting connect.
 TimeoutStartSec=30
