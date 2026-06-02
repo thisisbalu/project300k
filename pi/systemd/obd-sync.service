@@ -19,9 +19,9 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=pi
-WorkingDirectory=/home/pi/project300k/pi
-ExecStart=/home/pi/project300k/pi/venv/bin/python src/sync.py
+User=balu
+WorkingDirectory=/home/balu/project300k/pi
+ExecStart=/home/balu/project300k/pi/venv/bin/python src/sync.py
 # Belt-and-suspenders kill if sync hangs permanently (e.g. requests stall
 # beyond the 30s timeout). Prevents a stuck sync from blocking the next
 # timer-triggered invocation indefinitely.

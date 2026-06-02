@@ -46,7 +46,7 @@ RTC_OK_PATH          = "/mnt/usb/data/rtc_ok"
 CPU_TEMP_PATH        = "/sys/class/thermal/thermal_zone0/temp"
 USB_MOUNT_PATH       = "/mnt/usb"
 BT_ADAPTER_PATH      = "/sys/class/bluetooth/hci0"
-VERSION_PATH         = "/home/pi/project300k/pi/VERSION"
+VERSION_PATH         = "/home/balu/project300k/pi/VERSION"
 
 
 def increment_restart_count() -> int:

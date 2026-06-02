@@ -23,9 +23,9 @@ Wants=bluetooth.target
 
 [Service]
 Type=notify
-User=pi
-WorkingDirectory=/home/pi/project300k/pi
-ExecStart=/home/pi/project300k/pi/venv/bin/python src/main.py
+User=balu
+WorkingDirectory=/home/balu/project300k/pi
+ExecStart=/home/balu/project300k/pi/venv/bin/python src/main.py
 Restart=always
 RestartSec=15
 StartLimitBurst=5

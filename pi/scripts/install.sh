@@ -2,7 +2,7 @@
 set -e
 set -o pipefail
 
-REPO_DIR="/home/pi/project300k"
+REPO_DIR="/home/balu/project300k"
 PI_DIR="$REPO_DIR/pi"
 SYSTEMD_DIR="/etc/systemd/system"
 CONFIG_DIR="/etc/obd-collector"
@@ -11,7 +11,7 @@ LOG_DIR="/mnt/usb/logs"
 
 echo "==> Creating directories"
 sudo mkdir -p "$CONFIG_DIR" "$DATA_DIR" "$LOG_DIR"
-sudo chown pi:pi "$DATA_DIR" "$LOG_DIR"
+sudo chown balu:balu "$DATA_DIR" "$LOG_DIR"
 
 echo "==> Creating config file (if not exists)"
 if [ ! -f "$CONFIG_DIR/config.env" ]; then
