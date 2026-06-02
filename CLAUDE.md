@@ -26,6 +26,8 @@ frontend/    Part 3 — Web dashboard (deferred)
 
 Parts are built sequentially. Part 1 must be fully working before Part 2 starts.
 
+See `pi/CLAUDE.md` for detailed Pi internals: threading model, OBD connection rules, SQLite thread-safety contract, polling tier PID table, shutdown order, Mode 22 hex addresses, and systemd service specs.
+
 ## Commands (pi/)
 
 **Python**: Use `/usr/bin/python3` on this Mac — Homebrew Python 3.14 is broken. Venv is at `pi/venv/`.
@@ -77,6 +79,19 @@ Remaining before deployment:
 - WAL mode on ext4 USB drive — abrupt power cuts are safe, SQLite replays WAL on next open
 - All SQLite writes serialised through `QueueWriter`; thread safety via `_db_lock`
 - `reconnect_count` and `restart_count` persisted to USB drive files so sync script can read them independently of the collector process
+
+## Critical Non-Obvious Rules (Pi)
+
+**OBD connection must use `fast=False`**: `obd.OBD("/dev/rfcomm0", fast=False, timeout=30)` — omitting it drops the connection on the Pi Bluetooth stack. `obd.Async` must be instantiated with a port string directly, not wrapped around an existing `obd.OBD` object.
+
+**All SQLite writes must go through `QueueWriter`**: Use `enqueue()` for INSERT paths and `direct_execute()` for UPDATE paths. Never call `conn.execute()` directly from outside `QueueWriter` — `_db_lock` will not protect it.
+
+**Shutdown order is fixed** — DTC threads must finish before disconnect; queue must drain before `conn.close()`:
+```
+collector.stop() → trip_manager.stop() → queue_writer.stop() → obd_connection.disconnect() → conn.close()
+```
+
+**systemd services** (4 total): `obd-collector.service` (Type=notify, WatchdogSec=60), `obd-sync.service` (oneshot), `obd-sync.timer` (every 5 min after boot), `rfcomm-connect.service` (Bluetooth RFCOMM binding).
 
 ## Data Volume
 ~192,000 rows/month based on 1hr/day Mon–Sat + 4hrs Sunday.

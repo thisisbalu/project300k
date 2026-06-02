@@ -66,6 +66,7 @@ class OBDConnection:
                 conn = obd.OBD(config.OBD_PORT, fast=False, timeout=30)
 
                 if conn.is_connected():
+                    protocol = conn.protocol_name()
                     # Close immediately — Collector.query_sync() issues all
                     # synchronous queries through the async connection after
                     # temporarily stopping the polling loop.
@@ -73,7 +74,7 @@ class OBDConnection:
                     self._connection = None
                     logger.info(
                         f"OBD dongle verified on {config.OBD_PORT} "
-                        f"protocol: {conn.protocol_name()}"
+                        f"protocol: {protocol}"
                     )
                     return
 
