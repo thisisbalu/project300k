@@ -19,6 +19,10 @@ Type=simple
 # Unblock rfkill and bring up hci0 before connecting.
 ExecStartPre=/usr/sbin/rfkill unblock bluetooth
 ExecStartPre=-/usr/bin/hciconfig hci0 up
+# Give the OBDLink MX+ time to finish booting its ELM327 chip after power-on
+# before rfcomm attempts to connect. Without this delay, rfcomm connects at the
+# BT layer before the ELM327 is ready, causing OBD initialization to fail.
+ExecStartPre=/bin/sleep 5
 # rfcomm connect blocks until disconnected — this is intentional.
 ExecStart=/usr/bin/rfcomm connect 0 00:04:3E:8A:94:4C
 # Release the device cleanly on stop so the next start can bind it.
