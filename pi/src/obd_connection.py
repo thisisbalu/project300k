@@ -22,6 +22,7 @@ OBDLink MX+ dongle via /dev/rfcomm0. Handles:
 
 from __future__ import annotations
 
+import threading
 import time
 
 import obd
@@ -31,6 +32,38 @@ from health import write_reconnect_count
 from logger import logger
 
 RETRY_INTERVAL_S = 15
+_CONNECT_TIMEOUT_S = 60
+
+
+def _obd_connect_with_timeout(port: str) -> obd.OBD:
+    """Call obd.OBD() in a daemon thread with a hard 60s timeout.
+
+    python-obd can hang indefinitely on serial reads when rfcomm0 exists
+    but the underlying Bluetooth link has dropped — the serial read timeout
+    does not cover every code path in obd.OBD.__init__. Without this wrapper
+    the collector blocks for up to TimeoutStartSec (300s) before systemd
+    kills and restarts it.
+    """
+    result: list = [None, None]  # [conn, exception]
+
+    def _run() -> None:
+        try:
+            result[0] = obd.OBD(port, fast=False, timeout=30)
+        except Exception as exc:
+            result[1] = exc
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    thread.join(timeout=_CONNECT_TIMEOUT_S)
+
+    if thread.is_alive():
+        raise ConnectionError(
+            f"obd.OBD() hung for {_CONNECT_TIMEOUT_S}s — rfcomm0 may be stale, "
+            "waiting for rfcomm-connect to re-establish the link"
+        )
+    if result[1] is not None:
+        raise result[1]
+    return result[0]
 
 
 class OBDConnection:
@@ -63,7 +96,7 @@ class OBDConnection:
             try:
                 logger.info(f"OBD connection attempt {attempt} on {config.OBD_PORT}")
 
-                conn = obd.OBD(config.OBD_PORT, fast=False, timeout=30)
+                conn = _obd_connect_with_timeout(config.OBD_PORT)
 
                 if conn.is_connected():
                     protocol = conn.protocol_name()
