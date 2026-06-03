@@ -7,16 +7,14 @@ Written for a fresh Pi 3B with Raspberry Pi OS Lite (Bookworm 64-bit).
 
 ## Hardware List
 
-| Item | Approx cost |
-|------|-------------|
-| Raspberry Pi 3B (Kano kit) | already owned |
-| OBDLink MX+ | ~$120 CAD |
-| OBD-II extension cable with on/off switch | ~$12 CAD |
-| SanDisk Ultra Fit 32GB USB flash drive | ~$12 CAD |
-| Samsung Pro Endurance 32GB microSD | ~$15 CAD |
-| TP-Link UB500 Bluetooth USB dongle | ~$15 CAD |
-| DS3231 RTC module with CR2032 coin cell | ~$8 CAD |
-| Female-to-female jumper wires × 4 | ~$2 CAD |
+- Raspberry Pi 3B (Kano kit)
+- OBDLink MX+
+- OBD-II extension cable with on/off switch
+- SanDisk Ultra Fit 32GB USB flash drive
+- Samsung Pro Endurance 32GB microSD
+- TP-Link UB500 Bluetooth USB dongle
+- DS3231 RTC module with CR2032 coin cell
+- Female-to-female jumper wires × 4
 
 ---
 
