@@ -101,14 +101,25 @@ class TestVoltageHelpers:
 # ---------------------------------------------------------------------------
 
 class TestOnRpmGuards:
-    def test_none_response_returns_immediately(self, tm):
+    def test_none_response_does_not_start_trip(self, tm):
         tm.on_rpm(None)
         assert tm.current_trip_id is None
-        assert tm._rpm_zero_since is None
 
-    def test_null_response_returns_immediately(self, tm):
+    def test_null_response_does_not_start_trip(self, tm):
         tm.on_rpm(_null_response())
         assert tm.current_trip_id is None
+
+    def test_null_response_drives_zero_timer(self, tm):
+        # After key-off the ECU returns null instead of rpm=0; a null must start
+        # the zero-duration timer (engine not running), not be ignored.
+        with patch("trip.time.monotonic", return_value=50.0):
+            tm.on_rpm(_null_response())
+        assert tm._rpm_zero_since == 50.0
+
+    def test_none_response_drives_zero_timer(self, tm):
+        with patch("trip.time.monotonic", return_value=70.0):
+            tm.on_rpm(None)
+        assert tm._rpm_zero_since == 70.0
 
 
 # ---------------------------------------------------------------------------
@@ -205,9 +216,47 @@ class TestTripEnd:
             tm.on_rpm(_rpm_response(0))
 
             mock_mono.return_value = 131.0
+            tm.on_voltage(_voltage_response(13.8))  # fresh reading — engine still on
             tm.on_rpm(_rpm_response(0))
 
         assert tm.current_trip_id is not None
+
+    def test_trip_ends_on_null_rpm_with_low_voltage(self, tm):
+        # Engine off: the ECU stops answering RPM (null), not a clean rpm=0.
+        trip_id = self._start_trip(tm)
+
+        with patch("trip.time.monotonic") as mock_mono, \
+             patch("trip.update_trip_end") as mock_end, \
+             patch.object(tm, "_dispatch_dtc_scan"):
+            mock_mono.return_value = 200.0
+            tm.on_voltage(_voltage_response(12.2))
+            tm.on_rpm(_null_response())
+
+            mock_mono.return_value = 231.0
+            tm.on_rpm(_null_response())
+
+        assert tm.current_trip_id is None
+        mock_end.assert_called_once()
+        assert mock_end.call_args[0][1] == trip_id
+
+    def test_trip_ends_when_voltage_goes_stale(self, tm):
+        # Engine off but battery rests >12.5V, then the ECU sleeps so no fresh
+        # voltage arrives. Sustained rpm=0 + stale voltage must still end the trip.
+        trip_id = self._start_trip(tm)
+
+        with patch("trip.time.monotonic") as mock_mono, \
+             patch("trip.update_trip_end") as mock_end, \
+             patch.object(tm, "_dispatch_dtc_scan"):
+            mock_mono.return_value = 300.0
+            tm.on_voltage(_voltage_response(12.7))  # last fresh reading, above 12.5
+            tm.on_rpm(_rpm_response(0))
+
+            mock_mono.return_value = 331.0          # voltage now 31s stale
+            tm.on_rpm(_rpm_response(0))
+
+        assert tm.current_trip_id is None
+        mock_end.assert_called_once()
+        assert mock_end.call_args[0][1] == trip_id
 
     def test_trip_not_ended_before_30s_threshold(self, tm):
         self._start_trip(tm)

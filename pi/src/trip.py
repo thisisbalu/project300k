@@ -10,13 +10,19 @@ Trip start conditions (both required):
     rpm > 0            — engine actually started, not just accessory mode
 
 Trip end conditions (both required):
-    rpm = 0 for > 30s  — engine off (not just a red light)
-    battery_v < 12.5V  — alternator stopped, confirms engine off
+    rpm = 0 (or no engine response) for > 30s — engine off, not a red light
+    battery_v < 12.5V OR the voltage PID has gone silent — alternator stopped
 
 The 30s threshold prevents a long red light or drive-through from ending
 the trip. The voltage check prevents accessory mode (battery ~12V, RPM=0)
 from being mistaken for engine off — voltage stays at ~13.8V while the
 engine is running even if RPM briefly reads 0.
+
+After key-off the ECU stops answering: RPM and voltage responses go null
+rather than reporting a clean rpm=0 / low voltage. Nulls are therefore
+treated as "engine not running" for the zero-duration timer, and a voltage
+PID that has gone silent for >30s counts as engine-off confirmation —
+otherwise the trip would never end once the bus goes quiet.
 
 Threading:
     on_rpm() and on_voltage() are called from python-obd's background
@@ -105,6 +111,11 @@ class TripManager:
         self._rpm_zero_since: float | None = None
 
         self._last_voltage: float | None = None
+        # Monotonic timestamp of the last fresh voltage reading. Used to detect
+        # when the voltage PID has gone silent (engine off → ECU asleep), which
+        # is the trip-end signal when the bus stops answering before voltage is
+        # ever observed below VOLTAGE_ENGINE_OFF.
+        self._last_voltage_mono: float | None = None
         self._polling_paused: bool = False
 
         # Track active DTC scan threads so stop() can join them before
@@ -129,16 +140,19 @@ class TripManager:
         Drives the trip start/end state machine and the polling pause logic.
         All shared state mutations are protected by _lock.
 
+        A null/None response is treated as "engine not running" rather than
+        ignored: after key-off the ECU stops answering and returns null instead
+        of a clean rpm=0, so dropping nulls would freeze the zero-duration timer
+        and the trip would never end (and polling would never pause).
+
         Args:
             response: OBDResponse from python-obd (may be null on read error).
         """
-        if response is None or response.is_null():
-            return
-
-        rpm = response.value.magnitude
+        rpm_present = response is not None and not response.is_null()
+        rpm = response.value.magnitude if rpm_present else 0
 
         with self._lock:
-            if rpm > 0:
+            if rpm_present and rpm > 0:
                 self._rpm_zero_since = None
 
                 if self._polling_paused:
@@ -151,7 +165,7 @@ class TripManager:
                     self._start_trip()
 
             else:
-                # rpm == 0 — start or continue the zero-duration timer.
+                # rpm == 0 or no engine response — start/continue the zero timer.
                 if self._rpm_zero_since is None:
                     self._rpm_zero_since = time.monotonic()
 
@@ -161,8 +175,8 @@ class TripManager:
                     if not self._polling_paused:
                         self._pause_polling()
 
-                    # End the trip only if voltage also confirms engine is off.
-                    if self.current_trip_id is not None and self._voltage_below(VOLTAGE_ENGINE_OFF):
+                    # End the trip once voltage also confirms the engine is off.
+                    if self.current_trip_id is not None and self._engine_off_confirmed():
                         self._end_trip()
 
     def on_voltage(self, response: obd.OBDResponse) -> None:
@@ -179,6 +193,7 @@ class TripManager:
             return
         with self._lock:
             self._last_voltage = response.value.magnitude
+            self._last_voltage_mono = time.monotonic()
 
     def set_dtc_query(self, fn) -> None:
         """Wire the callable used to issue DTC queries at trip boundaries.
@@ -372,6 +387,25 @@ class TripManager:
         """Resume 1s and 5s polling tiers — RPM > 0."""
         self._polling_paused = False
         logger.info("Polling resumed — RPM > 0")
+
+    def _engine_off_confirmed(self) -> bool:
+        """Return True when voltage confirms the engine is off.
+
+        Confirmed either by a fresh sub-12.5V reading (alternator stopped) or by
+        the voltage PID having gone silent — no fresh reading for more than
+        RPM_ZERO_DURATION_S. After key-off the ECU stops answering within its
+        afterrun window, so requiring a fresh sub-12.5V reading exactly at the
+        30s mark is unreliable (a well-charged battery rests above 12.5V, and the
+        ECU may already be asleep). A silent voltage PID combined with sustained
+        rpm=0 is itself a reliable engine-off signal.
+
+        Must be called with _lock held.
+        """
+        if self._voltage_below(VOLTAGE_ENGINE_OFF):
+            return True
+        if self._last_voltage_mono is None:
+            return False
+        return (time.monotonic() - self._last_voltage_mono) >= RPM_ZERO_DURATION_S
 
     def _voltage_above(self, threshold: float) -> bool:
         """Return True if the last known voltage exceeds threshold."""
