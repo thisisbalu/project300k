@@ -113,8 +113,14 @@ Both counter files are `fsync`'d after every write — engine off = immediate po
 - Ford tables skipped silently at DEBUG level if they don't exist yet
 
 ## Logging
-Log file: `/mnt/usb/logs/obd.log` (5MB × 7 rotating files = 35MB cap)
-Falls back to stderr-only if USB not mounted — boot WARNING always appears in journald.
+- **Collector** writes to `/mnt/usb/logs/obd.log` (5MB × 7 rotating files = 35MB cap).
+  The rotating file handler is attached only by `main.py` via `logger.init_file_logging()`.
+  Falls back to stderr-only if USB not mounted — boot WARNING always appears in journald.
+- **Sync** (separate process) logs to stderr→journald only via `logger.configure_sync_logging()`
+  (`journalctl -u obd-sync`). It must NOT attach the file handler — `RotatingFileHandler`
+  is not multi-process safe, so collector + sync sharing one file corrupts rotation.
+- Timestamps are **UTC** (`_FORMATTER.converter = time.gmtime`, `…Z` suffix) to match the
+  ISO8601 UTC timestamps in SQLite.
 
 Log these events:
 - Pi boot (WARNING level so it always appears in journald)
@@ -125,11 +131,10 @@ Log these events:
 - Polling paused / resumed
 - Sync success (with row count), skipped (no hotspot), failed (with error)
 - SQLite write errors
-- Watchdog ping sent
 - Script restart (from systemd)
 - DS3231 OSF flag set on boot
 
-Do NOT log: individual PID values, every poll cycle, WAL checkpoints.
+Do NOT log: individual PID values, every poll cycle, WAL checkpoints, per-tick watchdog pings.
 
 ## systemd Services
 - `obd-collector.service` — Type=notify, Restart=always, RestartSec=15, WatchdogSec=60

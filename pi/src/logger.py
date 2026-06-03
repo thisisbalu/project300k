@@ -1,55 +1,70 @@
 """
-logger.py — Shared rotating file logger for the OBD collector.
+logger.py — Shared logger for the OBD collector.
 
-Provides a single `logger` instance imported by every other module.
-Writes to a rotating log file on the USB drive (5MB × 7 files = 35MB cap).
-Falls back to stderr-only if the log file cannot be opened — this handles
-the case where the USB drive is not yet mounted during early boot.
+Provides a single `logger` instance imported by every module. The stderr
+handler (captured by systemd's journal) is attached at import so the logger
+always works. The rotating USB file handler is attached explicitly by the
+collector via init_file_logging() — the sync process deliberately does NOT
+attach it (see configure_sync_logging) because RotatingFileHandler is not
+multi-process safe and the collector and sync run as separate processes;
+sharing one file would corrupt rotation and lose lines.
 
 Log levels:
-    File handler    — DEBUG and above (all events)
-    Console/stderr  — WARNING and above (captured by systemd journal)
+    File handler (collector only) — DEBUG and above
+    stderr handler                — WARNING+ (collector) / INFO+ (sync), to journald
+
+Timestamps are UTC to match the ISO8601 UTC timestamps stored in SQLite.
 
 Log format:
-    2026-05-29T08:00:01 | INFO     | Trip started: abc-123
+    2026-05-29T08:00:01Z | INFO     | Trip started: abc-123
 """
 
 import logging
 import os
 import sys
+import time
 from logging.handlers import RotatingFileHandler
 
 from config import config
 
+_FORMATTER = logging.Formatter(
+    fmt="%(asctime)s | %(levelname)-8s | %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%SZ",
+)
+# Log in UTC so log timestamps line up with the ISO8601 UTC timestamps written
+# to SQLite — correlating a log line with a data row needs no tz conversion.
+_FORMATTER.converter = time.gmtime
 
-def _build_logger() -> logging.Logger:
-    """Construct and configure the logger instance.
 
-    Called once at module import time. Subsequent imports receive the
-    same Logger object from Python's logging registry.
+logger = logging.getLogger("obd-collector")
+logger.setLevel(logging.DEBUG)
 
-    Returns:
-        Configured Logger instance named 'obd-collector'.
+# stderr handler is always present so the logger works in any process and is
+# captured by journald. WARNING+ by default (collector); sync raises it to INFO
+# via configure_sync_logging() so its progress is visible in the journal.
+_stderr_handler = logging.StreamHandler(sys.stderr)
+_stderr_handler.setLevel(logging.WARNING)
+_stderr_handler.setFormatter(_FORMATTER)
+logger.addHandler(_stderr_handler)
+
+
+def init_file_logging() -> None:
+    """Attach the rotating USB file handler — collector only.
+
+    Called once by main.py at startup. The sync process must NOT call this: it
+    logs to stderr→journald instead, so the collector and sync never share a
+    single RotatingFileHandler (not multi-process safe — when one process rolls
+    the file the other holds open, rotation breaks and lines are lost).
+
+    Degrades to stderr-only if the USB drive is not mounted — logging failure
+    must never crash the collector. Also emits the boot marker line.
     """
-    log = logging.getLogger("obd-collector")
-    log.setLevel(logging.DEBUG)
-
-    formatter = logging.Formatter(
-        fmt="%(asctime)s | %(levelname)-8s | %(message)s",
-        datefmt="%Y-%m-%dT%H:%M:%S",
-    )
-
-    # File handler — all levels, rotating 5MB × 7 files.
-    # Wrapped in try/except because the USB drive may not be mounted yet
-    # on the first boot or if the drive is removed. Logging failure must
-    # never crash the collector — it degrades to stderr only.
     try:
         log_dir = os.path.dirname(config.LOG_PATH)
-        # Only create the log directory if the USB drive is mounted.
-        # Without this check, os.makedirs would silently create /mnt/usb/logs/
-        # on the SD card's root filesystem when the USB drive is not yet mounted,
-        # causing subsequent boots to write logs to the SD card instead of flagging
-        # the missing drive.
+        # Only create the log directory if the USB drive is mounted. Without this
+        # check, os.makedirs would silently create /mnt/usb/logs/ on the SD card's
+        # root filesystem when the USB drive is not yet mounted, hiding the missing
+        # drive and writing logs to the SD card instead of flagging the problem.
         if not os.path.ismount("/mnt/usb"):
             raise OSError("USB drive not mounted at /mnt/usb")
         os.makedirs(log_dir, exist_ok=True)
@@ -60,28 +75,24 @@ def _build_logger() -> logging.Logger:
             encoding="utf-8",
         )
         file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(formatter)
-        log.addHandler(file_handler)
+        file_handler.setFormatter(_FORMATTER)
+        logger.addHandler(file_handler)
     except OSError as e:
         print(
             f"WARNING | Could not open log file {config.LOG_PATH}: {e} — logging to stderr only",
             file=sys.stderr,
         )
 
-    # Console/stderr handler — WARNING and above only.
-    # systemd captures stderr and writes it to the journal, so this gives
-    # visibility into warnings and errors without flooding the journal with
-    # every DEBUG line from the polling loop.
-    console_handler = logging.StreamHandler(sys.stderr)
-    console_handler.setLevel(logging.WARNING)
-    console_handler.setFormatter(formatter)
-    log.addHandler(console_handler)
-
-    # Use WARNING so this always appears on stderr (captured by journalctl)
-    # even when the USB drive is not mounted and no file handler was added.
-    log.warning(f"Pi boot — Python {sys.version.split()[0]} — log: {config.LOG_PATH}")
-
-    return log
+    # WARNING so this always appears on stderr/journald even when the USB drive
+    # is not mounted and no file handler was added.
+    logger.warning(f"Pi boot — Python {sys.version.split()[0]} — log: {config.LOG_PATH}")
 
 
-logger = _build_logger()
+def configure_sync_logging() -> None:
+    """Configure logging for the sync process: stderr (INFO+) only, no file.
+
+    The sync script runs as a separate systemd oneshot; its output is captured
+    by journald (`journalctl -u obd-sync`). Lowering the stderr threshold to INFO
+    surfaces sync progress there without opening the collector's USB log file.
+    """
+    _stderr_handler.setLevel(logging.INFO)

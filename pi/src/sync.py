@@ -43,7 +43,7 @@ import requests
 
 import health
 from config import config
-from logger import logger
+from logger import configure_sync_logging, logger
 from storage import get_connection
 
 # Maximum batches per table per sync run — guards against an infinite loop
@@ -72,6 +72,9 @@ def run() -> None:
     Performs the full sync cycle: network check → health snapshot →
     per-table batch sync → summary log. Safe to run repeatedly.
     """
+    # Sync runs as a separate process — log to stderr→journald only, never the
+    # collector's USB file (RotatingFileHandler is not multi-process safe).
+    configure_sync_logging()
     logger.info("Sync started")
 
     if not _check_network():

@@ -22,25 +22,24 @@ def _reload_logger():
 # ---------------------------------------------------------------------------
 
 class TestNoUsbMount:
-    def test_stderr_handler_always_added(self):
-        with patch("os.path.ismount", return_value=False):
-            lg = _reload_logger()
-        handlers = lg.logger.handlers
-        stderr_handlers = [h for h in handlers if isinstance(h, logging.StreamHandler)
+    def test_stderr_handler_present_on_import(self):
+        # The stderr handler is attached at import so the logger always works,
+        # in any process, before init_file_logging() is called.
+        lg = _reload_logger()
+        stderr_handlers = [h for h in lg.logger.handlers if isinstance(h, logging.StreamHandler)
                            and not isinstance(h, logging.FileHandler)]
         assert len(stderr_handlers) >= 1
 
     def test_no_file_handler_when_usb_not_mounted(self):
+        lg = _reload_logger()
         with patch("os.path.ismount", return_value=False):
-            lg = _reload_logger()
+            lg.init_file_logging()
         file_handlers = [h for h in lg.logger.handlers if isinstance(h, logging.FileHandler)]
         assert len(file_handlers) == 0
 
     def test_stderr_handler_level_is_warning(self):
-        with patch("os.path.ismount", return_value=False):
-            lg = _reload_logger()
-        handlers = lg.logger.handlers
-        stderr_handlers = [h for h in handlers if isinstance(h, logging.StreamHandler)
+        lg = _reload_logger()
+        stderr_handlers = [h for h in lg.logger.handlers if isinstance(h, logging.StreamHandler)
                            and not isinstance(h, logging.FileHandler)]
         assert stderr_handlers[0].level == logging.WARNING
 
@@ -54,10 +53,11 @@ class TestUsbMounted:
         from config import config
         log_path = str(tmp_path / "obd.log")
 
+        lg = _reload_logger()
         with patch("os.path.ismount", return_value=True), \
              patch("os.makedirs"), \
              patch.object(config, "LOG_PATH", log_path):
-            lg = _reload_logger()
+            lg.init_file_logging()
 
         file_handlers = [h for h in lg.logger.handlers
                          if isinstance(h, logging.handlers.RotatingFileHandler)]
@@ -68,10 +68,11 @@ class TestUsbMounted:
         import logging.handlers
         log_path = str(tmp_path / "obd.log")
 
+        lg = _reload_logger()
         with patch("os.path.ismount", return_value=True), \
              patch("os.makedirs"), \
              patch.object(config, "LOG_PATH", log_path):
-            lg = _reload_logger()
+            lg.init_file_logging()
 
         fh = [h for h in lg.logger.handlers
               if isinstance(h, logging.handlers.RotatingFileHandler)][0]
@@ -82,9 +83,46 @@ class TestUsbMounted:
         log_path = str(tmp_path / "logs" / "obd.log")
         log_dir = str(tmp_path / "logs")
 
+        lg = _reload_logger()
         with patch("os.path.ismount", return_value=True), \
              patch("os.makedirs") as mock_mkdirs, \
              patch.object(config, "LOG_PATH", log_path):
-            _reload_logger()
+            lg.init_file_logging()
 
         mock_mkdirs.assert_called_once_with(log_dir, exist_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Sync process — stderr/journald only, never the shared USB file
+# ---------------------------------------------------------------------------
+
+class TestSyncLogging:
+    def test_sync_does_not_add_file_handler(self, tmp_path):
+        from config import config
+        log_path = str(tmp_path / "obd.log")
+
+        lg = _reload_logger()
+        with patch("os.path.ismount", return_value=True), \
+             patch.object(config, "LOG_PATH", log_path):
+            lg.configure_sync_logging()  # sync must NOT open the rotating file
+
+        file_handlers = [h for h in lg.logger.handlers if isinstance(h, logging.FileHandler)]
+        assert len(file_handlers) == 0
+
+    def test_sync_lowers_stderr_to_info(self):
+        lg = _reload_logger()
+        lg.configure_sync_logging()
+        stderr_handlers = [h for h in lg.logger.handlers if isinstance(h, logging.StreamHandler)
+                           and not isinstance(h, logging.FileHandler)]
+        assert stderr_handlers[0].level == logging.INFO
+
+
+# ---------------------------------------------------------------------------
+# UTC timestamps — match the ISO8601 UTC timestamps stored in SQLite
+# ---------------------------------------------------------------------------
+
+class TestUtcTimestamps:
+    def test_formatter_uses_utc(self):
+        import time
+        lg = _reload_logger()
+        assert lg._FORMATTER.converter is time.gmtime

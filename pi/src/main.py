@@ -30,7 +30,7 @@ import sdnotify
 import health
 from collector import Collector
 from config import config
-from logger import logger
+from logger import init_file_logging, logger
 from obd_connection import OBDConnection
 from queue_writer import QueueWriter
 from storage import get_connection, init_schema
@@ -129,6 +129,9 @@ def main() -> None:
     # to stop the service and we must drain the queue and close SQLite cleanly.
     signal.signal(signal.SIGTERM, _handle_sigterm)
 
+    # Attach the rotating USB file handler (collector-only) before anything logs.
+    init_file_logging()
+
     # Initialise sdnotify early — used for both READY and WATCHDOG signals.
     notifier = sdnotify.SystemdNotifier()
 
@@ -188,7 +191,6 @@ def main() -> None:
                 break
 
             notifier.notify("WATCHDOG=1")
-            logger.info("Watchdog ping sent")
             _heartbeat_ticks += 1
             if _heartbeat_ticks % 2 == 0:
                 _log_heartbeat(collector, _uptime_start)
