@@ -59,6 +59,7 @@ import obd
 from config import config
 from logger import logger
 from obd_commands import ALL_PIDS, PIDConfig
+from obd_connection import connect_with_timeout
 
 
 class Collector:
@@ -187,8 +188,14 @@ class Collector:
         inside _monitor_connection() without duplicating registration logic.
         """
         # obd.Async is a subclass of obd.OBD — instantiate with port string,
-        # not by wrapping an existing connection object.
-        self._async_conn = obd.Async(config.OBD_PORT, fast=False, timeout=30)
+        # not by wrapping an existing connection object. Wrapped in
+        # connect_with_timeout because obd.Async.__init__ shares obd.OBD's
+        # init path and can hang indefinitely on a stale rfcomm0 — without the
+        # guard a mid-trip reconnect blocks this thread forever while the main
+        # loop keeps pinging the watchdog, so systemd never restarts the service.
+        self._async_conn = connect_with_timeout(
+            lambda: obd.Async(config.OBD_PORT, fast=False, timeout=30)
+        )
 
         # Reset per-table buffers and flush timers on every (re)connect.
         # Setting last_flush to 0.0 means the first callback for each table

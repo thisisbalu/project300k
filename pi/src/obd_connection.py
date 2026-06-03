@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import threading
 import time
+from typing import Callable
 
 import obd
 
@@ -35,35 +36,73 @@ RETRY_INTERVAL_S = 15
 _CONNECT_TIMEOUT_S = 60
 
 
-def _obd_connect_with_timeout(port: str) -> obd.OBD:
-    """Call obd.OBD() in a daemon thread with a hard 60s timeout.
+def connect_with_timeout(
+    factory: Callable[[], obd.OBD], timeout_s: int = _CONNECT_TIMEOUT_S
+) -> obd.OBD:
+    """Run a python-obd connection constructor in a daemon thread with a hard timeout.
 
-    python-obd can hang indefinitely on serial reads when rfcomm0 exists
-    but the underlying Bluetooth link has dropped — the serial read timeout
-    does not cover every code path in obd.OBD.__init__. Without this wrapper
-    the collector blocks for up to TimeoutStartSec (300s) before systemd
-    kills and restarts it.
+    python-obd can hang indefinitely on serial reads when rfcomm0 exists but the
+    underlying Bluetooth link has dropped — the serial read timeout does not cover
+    every code path in obd.OBD.__init__ (nor obd.Async, which subclasses it).
+    Without this wrapper the caller blocks until systemd's TimeoutStartSec/watchdog
+    kills the process. Used for both the sync obd.OBD verify and the collector's
+    obd.Async open so the guard lives in one place.
+
+    If the constructor completes *after* the timeout, the late connection is closed
+    so it does not leak /dev/rfcomm0 and contend with the next attempt.
+
+    Args:
+        factory:   Zero-arg callable returning a connected obd.OBD/obd.Async.
+        timeout_s: Hard wall-clock limit before giving up on the constructor.
+
+    Raises:
+        ConnectionError: If the constructor does not return within timeout_s.
+        Exception:       Re-raised from the constructor if it failed in time.
     """
-    result: list = [None, None]  # [conn, exception]
+    box: dict = {"conn": None, "exc": None}
+    lock = threading.Lock()
+    timed_out = False
 
     def _run() -> None:
+        conn = None
+        exc = None
         try:
-            result[0] = obd.OBD(port, fast=False, timeout=30)
-        except Exception as exc:
-            result[1] = exc
+            conn = factory()
+        except BaseException as e:
+            # Marshal any exception (including KeyboardInterrupt) back to the
+            # caller's thread — otherwise it dies silently here and connect()
+            # never sees it, spinning its retry loop forever.
+            exc = e
+        with lock:
+            if timed_out:
+                # Caller already gave up — release the port so the next attempt
+                # does not contend with an abandoned, never-closed connection.
+                if conn is not None:
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
+                return
+            box["conn"], box["exc"] = conn, exc
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
-    thread.join(timeout=_CONNECT_TIMEOUT_S)
+    thread.join(timeout=timeout_s)
 
-    if thread.is_alive():
-        raise ConnectionError(
-            f"obd.OBD() hung for {_CONNECT_TIMEOUT_S}s — rfcomm0 may be stale, "
-            "waiting for rfcomm-connect to re-establish the link"
-        )
-    if result[1] is not None:
-        raise result[1]
-    return result[0]
+    with lock:
+        # Worker may have finished right at the deadline — prefer its result.
+        if box["conn"] is not None or box["exc"] is not None:
+            if box["exc"] is not None:
+                raise box["exc"]
+            return box["conn"]
+        # Still running and no result yet — give up under the lock so a late
+        # completion sees timed_out and closes the connection it produced.
+        timed_out = True
+
+    raise ConnectionError(
+        f"OBD connect hung for {timeout_s}s — rfcomm0 may be stale, "
+        "waiting for rfcomm-connect to re-establish the link"
+    )
 
 
 class OBDConnection:
@@ -96,7 +135,9 @@ class OBDConnection:
             try:
                 logger.info(f"OBD connection attempt {attempt} on {config.OBD_PORT}")
 
-                conn = _obd_connect_with_timeout(config.OBD_PORT)
+                conn = connect_with_timeout(
+                    lambda: obd.OBD(config.OBD_PORT, fast=False, timeout=30)
+                )
 
                 if conn.is_connected():
                     protocol = conn.protocol_name()
