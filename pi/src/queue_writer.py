@@ -109,6 +109,16 @@ class QueueWriter:
             logger.warning("QueueWriter thread did not stop within 15s — possible SQLite hang")
         logger.info("QueueWriter stopped")
 
+    @property
+    def is_alive(self) -> bool:
+        """True if the background writer thread is running.
+
+        Read by the main watchdog loop: if this thread has died, SQLite writes
+        have silently stopped, so the service must be restarted rather than left
+        pinging the systemd watchdog as a zombie.
+        """
+        return self._thread.is_alive()
+
     def enqueue(self, table: str, row: dict[str, Any]) -> None:
         """Put a row onto the write queue.
 

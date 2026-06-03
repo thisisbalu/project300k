@@ -142,6 +142,18 @@ class TestMakeCallback:
         cb(self._make_response(1500))
         mock_qw.enqueue.assert_not_called()
 
+    def test_callback_swallows_handler_exceptions(self, caplog):
+        """An exception in the handler must never escape into python-obd's
+        async worker thread (which would kill polling permanently)."""
+        import logging
+        c, _, _ = self._make_collector(trip_id=str(uuid.uuid4()))
+        pid = self._make_pid()
+        cb = c._make_callback(pid)
+        with patch.object(c, "_handle_response", side_effect=ValueError("boom")), \
+             caplog.at_level(logging.ERROR, logger="obd-collector"):
+            cb(self._make_response(1500))  # must not raise
+        assert "OBD callback error" in caplog.text
+
     def test_skips_fast_pids_when_paused(self):
         """1s and 5s PIDs must be suppressed when polling is paused."""
         c, mock_qw, _ = self._make_collector(trip_id=str(uuid.uuid4()), paused=True)
@@ -437,3 +449,56 @@ class TestPollingHealth:
     def test_latest_returns_none_for_unseen_column(self):
         c = self._make_collector()
         assert c.latest("rpm") is None
+
+
+# ---------------------------------------------------------------------------
+# _monitor_connection() — reconnect resilience
+# ---------------------------------------------------------------------------
+
+class TestMonitorReconnect:
+    def _make_collector(self):
+        from collector import Collector
+        c = Collector(MagicMock(), MagicMock(), MagicMock())
+        return c
+
+    def test_retries_after_reconnect_left_conn_none(self):
+        """A previous failed reconnect leaves _async_conn None; the monitor must
+        keep retrying, not break out and disable reconnection for the session."""
+        c = self._make_collector()
+        c._async_conn = None  # state after a failed reconnect
+        c._obd_connection.reconnect = MagicMock()
+
+        waits = iter([False, False, True])  # two live iterations, then stop
+        with patch.object(c._stop_event, "wait", side_effect=lambda timeout: next(waits)), \
+             patch.object(c, "_connect_and_watch"):
+            c._monitor_connection()
+
+        assert c._obd_connection.reconnect.call_count == 2
+
+    def test_keeps_running_when_reconnect_raises(self):
+        """An exception during reconnect must be caught and retried next tick."""
+        c = self._make_collector()
+        down = MagicMock()
+        down.is_connected.return_value = False
+        c._async_conn = down
+        c._obd_connection.reconnect = MagicMock(side_effect=[ConnectionError("x"), None])
+
+        waits = iter([False, False, True])
+        with patch.object(c._stop_event, "wait", side_effect=lambda timeout: next(waits)), \
+             patch.object(c, "_connect_and_watch"):
+            c._monitor_connection()
+
+        assert c._obd_connection.reconnect.call_count == 2
+
+    def test_no_reconnect_while_connected(self):
+        c = self._make_collector()
+        up = MagicMock()
+        up.is_connected.return_value = True
+        c._async_conn = up
+        c._obd_connection.reconnect = MagicMock()
+
+        waits = iter([False, True])
+        with patch.object(c._stop_event, "wait", side_effect=lambda timeout: next(waits)):
+            c._monitor_connection()
+
+        c._obd_connection.reconnect.assert_not_called()

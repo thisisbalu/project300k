@@ -147,6 +147,15 @@ class Collector:
         """True if the async OBD connection is currently active."""
         return self._async_conn is not None and self._async_conn.is_connected()
 
+    def is_monitor_alive(self) -> bool:
+        """True if the reconnect-monitor thread is running.
+
+        Read by the main watchdog loop. If the monitor thread has died the
+        collector can no longer recover from a Bluetooth drop, so the service
+        must be restarted rather than left pinging the watchdog as a zombie.
+        """
+        return self._monitor_thread is not None and self._monitor_thread.is_alive()
+
     def query_sync(self, command: obd.OBDCommand) -> obd.OBDResponse | None:
         """Stop the async loop, issue a synchronous OBD query, restart the loop.
 
@@ -250,20 +259,30 @@ class Collector:
         # _stop_event.wait(10) returns True when the event is set (stop requested)
         # and False when the 10s timeout elapses — cleaner than time.sleep(10).
         while not self._stop_event.wait(timeout=10):
-            if self._async_conn is None:
+            # Snapshot the reference — stop() may null it from another thread.
+            conn = self._async_conn
+            if conn is not None and conn.is_connected():
+                continue
+
+            # Down — either a real drop or a previous reconnect that failed and
+            # left _async_conn None. Keep retrying every 10s; a single failure
+            # must NOT permanently disable reconnection (would silently end
+            # collection for the rest of the session while the watchdog keeps
+            # getting pinged).
+            if self._stop_event.is_set():
                 break
-            if not self._async_conn.is_connected():
-                logger.warning("Async OBD connection dropped — reconnecting")
-                try:
-                    self._async_conn.stop()
-                    self._async_conn = None
-                    # reconnect() increments reconnect_count and writes it to
-                    # disk so the sync script can include the live count.
-                    self._obd_connection.reconnect()
-                    self._connect_and_watch()
-                    logger.info("Async OBD connection restored")
-                except Exception as e:
-                    logger.error(f"Async OBD reconnect failed: {e}")
+            logger.warning("Async OBD connection down — reconnecting")
+            try:
+                if conn is not None:
+                    conn.stop()
+                self._async_conn = None
+                # reconnect() increments reconnect_count and writes it to disk
+                # so the sync script can include the live count.
+                self._obd_connection.reconnect()
+                self._connect_and_watch()
+                logger.info("Async OBD connection restored")
+            except Exception as e:
+                logger.error(f"Async OBD reconnect failed: {e} — will retry in 10s")
 
     def polling_health(self, window_s: int = 300) -> tuple[int, int]:
         """Return (active_pids, total_pids) for the given look-back window.
@@ -326,53 +345,69 @@ class Collector:
         Returns:
             Callable that accepts an OBDResponse and accumulates/flushes.
         """
+        def callback(response: obd.OBDResponse) -> None:
+            # Never let an exception escape into python-obd's async worker thread:
+            # an unhandled error there kills the polling thread permanently while
+            # is_connected() stays True (so the monitor never reconnects) and the
+            # watchdog keeps being pinged — silently halting all data collection.
+            try:
+                self._handle_response(pid, response)
+            except Exception as e:
+                logger.error(f"OBD callback error for {pid.table}.{pid.column}: {e}")
+
+        return callback
+
+    def _handle_response(self, pid: PIDConfig, response: obd.OBDResponse) -> None:
+        """Buffer one OBD reading and flush the table's combined row when due.
+
+        Runs on python-obd's async callback thread. Kept separate from the
+        callback closure so the closure can wrap it in a try/except that stops
+        any exception from escaping into (and killing) the async worker thread.
+        """
         table      = pid.table
         column     = pid.column
         interval_s = pid.interval_s
 
-        def callback(response: obd.OBDResponse) -> None:
-            trip_id = self._trip_manager.current_trip_id
-            if trip_id is None:
-                return
+        trip_id = self._trip_manager.current_trip_id
+        if trip_id is None:
+            return
 
-            if self._trip_manager.is_paused and interval_s < 30:
-                return
+        if self._trip_manager.is_paused and interval_s < 30:
+            return
 
-            # Extract raw magnitude — None if response has no value.
-            value = None
-            if response is not None and not response.is_null():
-                value = (
-                    response.value.magnitude
-                    if hasattr(response.value, "magnitude")
-                    else response.value
-                )
+        # Extract raw magnitude — None if response has no value.
+        value = None
+        if response is not None and not response.is_null():
+            value = (
+                response.value.magnitude
+                if hasattr(response.value, "magnitude")
+                else response.value
+            )
 
-            now_mono = time.monotonic()
+        now_mono = time.monotonic()
 
-            if value is not None:
-                self._pid_last_seen[column] = now_mono
-                self._latest[column] = value
-            buf      = self._table_buffer[table]
+        if value is not None:
+            self._pid_last_seen[column] = now_mono
+            self._latest[column] = value
+        buf      = self._table_buffer[table]
 
-            # Flush the completed window when interval_s has elapsed.
-            # Always reset the timer (even on an empty first window) so
-            # subsequent callbacks see a valid elapsed baseline.
-            if now_mono - self._table_last_flush[table] >= interval_s:
-                if buf:
-                    row = {
-                        "id":        str(uuid.uuid4()),
-                        "trip_id":   trip_id,
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                        "synced":    0,
-                        **buf,
-                    }
-                    self._queue_writer.enqueue(table, row)
-                self._table_buffer[table]     = {}
-                self._table_last_flush[table] = now_mono
+        # Flush the completed window when interval_s has elapsed.
+        # Always reset the timer (even on an empty first window) so
+        # subsequent callbacks see a valid elapsed baseline.
+        if now_mono - self._table_last_flush[table] >= interval_s:
+            if buf:
+                row = {
+                    "id":        str(uuid.uuid4()),
+                    "trip_id":   trip_id,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "synced":    0,
+                    **buf,
+                }
+                self._queue_writer.enqueue(table, row)
+            self._table_buffer[table]     = {}
+            self._table_last_flush[table] = now_mono
 
-            # Accumulate into the current window — overwrites if the same
-            # column fires multiple times before the window closes (takes
-            # the most recent value, which is correct for time-series data).
-            self._table_buffer[table][column] = value
-
-        return callback
+        # Accumulate into the current window — overwrites if the same column
+        # fires multiple times before the window closes (takes the most recent
+        # value, which is correct for time-series data).
+        self._table_buffer[table][column] = value

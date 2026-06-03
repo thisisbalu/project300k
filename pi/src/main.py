@@ -175,6 +175,18 @@ def main() -> None:
     _uptime_start = time.monotonic()
     try:
         while True:
+            # A live main loop is not enough: data collection runs on the
+            # queue-writer drain thread and BT recovery on the obd-monitor thread.
+            # If either has died, withhold the watchdog ping and exit so systemd
+            # (Restart=always) restarts a clean process — otherwise we would keep
+            # pinging the watchdog as a zombie that silently collects nothing.
+            if not queue_writer.is_alive:
+                logger.error("Queue-writer thread dead — exiting for systemd restart")
+                break
+            if not collector.is_monitor_alive():
+                logger.error("OBD monitor thread dead — exiting for systemd restart")
+                break
+
             notifier.notify("WATCHDOG=1")
             logger.info("Watchdog ping sent")
             _heartbeat_ticks += 1

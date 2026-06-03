@@ -102,6 +102,56 @@ class TestMain:
         mock_obd.disconnect.assert_called_once()
         mock_conn.close.assert_called_once()
 
+    def _run_main_with_dead_worker(self, mock_qw, mock_coll):
+        """Boot main() with the given (mocked) worker objects; return the notifier."""
+        from main import main
+        mock_conn = MagicMock()
+        mock_obd = MagicMock()
+        mock_tm = MagicMock()
+        mock_notifier = MagicMock()
+
+        with patch("builtins.open", mock_open(read_data="ds1307\n")), \
+             patch("main.health.write_rtc_ok"), \
+             patch("main.health.increment_restart_count", return_value=1), \
+             patch("main.get_connection", return_value=mock_conn), \
+             patch("main.init_schema"), \
+             patch("main.QueueWriter", return_value=mock_qw), \
+             patch("main.OBDConnection", return_value=mock_obd), \
+             patch("main.TripManager", return_value=mock_tm), \
+             patch("main.Collector", return_value=mock_coll), \
+             patch("main.sdnotify.SystemdNotifier", return_value=mock_notifier), \
+             patch("main.time.sleep") as mock_sleep:
+            main()
+        return mock_notifier, mock_sleep, mock_conn
+
+    def test_main_exits_without_pinging_when_queue_writer_dead(self):
+        """A dead drain thread must stop watchdog pings so systemd restarts us."""
+        mock_qw = MagicMock()
+        mock_qw.is_alive = False
+        mock_coll = MagicMock()
+        mock_coll.is_monitor_alive.return_value = True
+
+        notifier, mock_sleep, mock_conn = self._run_main_with_dead_worker(mock_qw, mock_coll)
+
+        pinged = [c.args for c in notifier.notify.call_args_list]
+        assert ("WATCHDOG=1",) not in pinged   # never pinged the watchdog
+        mock_sleep.assert_not_called()          # broke before sleeping
+        mock_qw.stop.assert_called_once()       # clean shutdown still ran
+        mock_conn.close.assert_called_once()
+
+    def test_main_exits_without_pinging_when_monitor_dead(self):
+        """A dead obd-monitor thread must likewise stop pings and exit."""
+        mock_qw = MagicMock()
+        mock_qw.is_alive = True
+        mock_coll = MagicMock()
+        mock_coll.is_monitor_alive.return_value = False
+
+        notifier, mock_sleep, _ = self._run_main_with_dead_worker(mock_qw, mock_coll)
+
+        pinged = [c.args for c in notifier.notify.call_args_list]
+        assert ("WATCHDOG=1",) not in pinged
+        mock_sleep.assert_not_called()
+
     def test_main_registers_sigterm_handler(self):
         """SIGTERM handler must be registered before anything else starts."""
         registered = {}
