@@ -20,16 +20,41 @@ _VALID = {
 _OPT_KEYS = {"DB_PATH", "LOG_PATH", "OBD_PORT", "SYNC_BATCH_SIZE"}
 
 
+@pytest.fixture(autouse=True)
+def _restore_config_module():
+    """Reinstate the original config module after each test.
+
+    Several tests here reload/pop 'config' from sys.modules to exercise _load().
+    Production modules (health, logger, ...) cache the singleton via
+    `from config import config` at import time, so a left-over reloaded module
+    would desync those cached references and break unrelated tests downstream
+    (e.g. test_health patching a config instance health no longer uses). Snapshot
+    and restore guarantees isolation regardless of what a test does to sys.modules.
+    """
+    saved = sys.modules.get("config")
+    yield
+    if saved is not None:
+        sys.modules["config"] = saved
+    else:
+        sys.modules.pop("config", None)
+
+
 @contextmanager
 def _fresh_config(overrides=None):
     """Reload config in isolation with controlled env vars.
 
     Pops 'config' from sys.modules so _load() re-executes. Restores the
-    original env and removes the freshly-loaded module in the finally block
-    so other tests continue to use conftest's valid config.
+    original env and the original config module in the finally block so other
+    tests continue to use conftest's valid config.
+
+    The original module object MUST be reinstated (not just popped): production
+    modules cache their singleton via `from config import config` at import
+    time, so leaving config popped would let a later import build a different
+    object and desync those cached references.
     """
     all_keys = set(_VALID) | (set(overrides) if overrides else set())
     saved = {k: os.environ.get(k) for k in all_keys}
+    saved_mod = sys.modules.get("config")
     sys.modules.pop("config", None)
 
     try:
@@ -51,7 +76,10 @@ def _fresh_config(overrides=None):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = orig
-        sys.modules.pop("config", None)
+        if saved_mod is not None:
+            sys.modules["config"] = saved_mod
+        else:
+            sys.modules.pop("config", None)
 
 
 # ---------------------------------------------------------------------------
