@@ -1,0 +1,270 @@
+#!/bin/bash
+# jarvis — Project 300K Pi assistant
+# Usage: jarvis <command>
+
+DB="/mnt/usb/data/obd.db"
+LOG="/mnt/usb/logs/obd.log"
+REPO="/home/balu/project300k"
+PIP="$REPO/pi/venv/bin/pip"
+
+BOLD="\033[1m"
+GREEN="\033[32m"
+YELLOW="\033[33m"
+RED="\033[31m"
+RESET="\033[0m"
+
+_header() { echo -e "\n${BOLD}$1${RESET}"; }
+_ok()     { echo -e "${GREEN}✓ $1${RESET}"; }
+_warn()   { echo -e "${YELLOW}! $1${RESET}"; }
+_err()    { echo -e "${RED}✗ $1${RESET}"; }
+
+_require_db() {
+    if [ ! -f "$DB" ]; then
+        _err "Database not found at $DB — is the USB drive mounted?"
+        exit 1
+    fi
+}
+
+_require_log() {
+    if [ ! -f "$LOG" ]; then
+        _err "Log not found at $LOG — is the USB drive mounted? Try: jarvis journal"
+        exit 1
+    fi
+}
+
+cmd="${1:-help}"
+
+case "$cmd" in
+
+    # ── Logs ────────────────────────────────────────────────────────────────
+
+    logs)
+        _require_log
+        echo -e "${BOLD}Tailing $LOG — Ctrl+C to exit${RESET}"
+        tail -f "$LOG"
+        ;;
+
+    last)
+        _require_log
+        n="${2:-50}"
+        tail -n "$n" "$LOG"
+        ;;
+
+    journal)
+        # Collector logs via systemd — works even if USB is not mounted
+        journalctl -u obd-collector.service -n "${2:-50}" --no-pager
+        ;;
+
+    sync-log)
+        journalctl -u obd-sync.service -n "${2:-50}" --no-pager
+        ;;
+
+    # ── Services ─────────────────────────────────────────────────────────────
+
+    status)
+        _header "rfcomm-connect"
+        sudo systemctl status rfcomm-connect.service --no-pager -l
+        _header "obd-collector"
+        sudo systemctl status obd-collector.service --no-pager -l
+        _header "obd-sync.timer"
+        sudo systemctl status obd-sync.timer --no-pager -l
+        ;;
+
+    restart)
+        echo "Restarting obd-collector..."
+        sudo systemctl restart obd-collector.service
+        sleep 2
+        sudo systemctl status obd-collector.service --no-pager -l
+        ;;
+
+    stop)
+        sudo systemctl stop obd-collector.service
+        _ok "obd-collector stopped"
+        ;;
+
+    start)
+        sudo systemctl start obd-collector.service
+        sleep 2
+        sudo systemctl status obd-collector.service --no-pager -l
+        ;;
+
+    sync)
+        echo "Triggering sync..."
+        sudo systemctl start obd-sync.service
+        sleep 3
+        _header "Sync result"
+        journalctl -u obd-sync.service -n 30 --no-pager
+        ;;
+
+    # ── Database ─────────────────────────────────────────────────────────────
+
+    db)
+        _require_db
+        echo -e "${BOLD}SQLite shell — $DB${RESET}"
+        echo ".headers on
+.mode column" | cat - | sqlite3 "$DB"
+        ;;
+
+    rows)
+        _require_db
+        _header "Row counts"
+        sqlite3 -column -header "$DB" "
+            SELECT table_name,
+                   total,
+                   unsynced,
+                   CASE WHEN total > 0
+                        THEN ROUND(unsynced * 100.0 / total, 1) || '%'
+                        ELSE '0%'
+                   END AS unsynced_pct
+            FROM (
+                SELECT 'obd_1s'       AS table_name, COUNT(*) AS total, SUM(synced=0) AS unsynced FROM obd_1s
+                UNION ALL
+                SELECT 'obd_5s',       COUNT(*), SUM(synced=0) FROM obd_5s
+                UNION ALL
+                SELECT 'obd_30s',      COUNT(*), SUM(synced=0) FROM obd_30s
+                UNION ALL
+                SELECT 'trips',        COUNT(*), SUM(synced=0) FROM trips
+                UNION ALL
+                SELECT 'dtc_events',   COUNT(*), SUM(synced=0) FROM dtc_events
+                UNION ALL
+                SELECT 'pi_health_log',COUNT(*), SUM(synced=0) FROM pi_health_log
+            );
+        "
+        ;;
+
+    trips)
+        _require_db
+        n="${2:-10}"
+        _header "Last $n trips"
+        sqlite3 -column -header "$DB" "
+            SELECT
+                trip_number AS '#',
+                SUBSTR(start_time, 1, 16) AS started,
+                CASE
+                    WHEN end_time IS NULL THEN 'ACTIVE'
+                    ELSE SUBSTR(end_time, 1, 16)
+                END AS ended,
+                CASE
+                    WHEN duration_s IS NULL AND end_time IS NULL THEN 'ongoing'
+                    WHEN duration_s IS NULL THEN '?'
+                    WHEN duration_s < 60 THEN duration_s || 's'
+                    ELSE (duration_s / 60) || 'm ' || (duration_s % 60) || 's'
+                END AS duration
+            FROM trips
+            ORDER BY start_time DESC
+            LIMIT $n;
+        "
+        ;;
+
+    dtc)
+        _require_db
+        _header "DTC events"
+        result=$(sqlite3 -column -header "$DB" "
+            SELECT
+                SUBSTR(timestamp, 1, 16) AS time,
+                code,
+                description,
+                status,
+                scan_trigger AS trigger
+            FROM dtc_events
+            ORDER BY timestamp DESC
+            LIMIT 20;
+        ")
+        if [ -z "$result" ]; then
+            _ok "No DTC events recorded"
+        else
+            echo "$result"
+        fi
+        ;;
+
+    # ── System health ────────────────────────────────────────────────────────
+
+    health)
+        _header "CPU Temperature"
+        if [ -f /sys/class/thermal/thermal_zone0/temp ]; then
+            awk '{printf "  %.1f°C\n", $1/1000}' /sys/class/thermal/thermal_zone0/temp
+        else
+            _warn "CPU temp unavailable"
+        fi
+
+        _header "Memory"
+        free -h | awk 'NR==1{print "  "$0} NR==2{print "  "$0}'
+
+        _header "USB Drive"
+        if mountpoint -q /mnt/usb; then
+            df -h /mnt/usb | awk 'NR==2{printf "  %s used of %s (%s free)\n", $3, $2, $4}'
+            _ok "Mounted at /mnt/usb"
+        else
+            _err "USB drive not mounted"
+        fi
+
+        _header "Uptime"
+        uptime | sed 's/^ */  /'
+
+        _header "Restart counter"
+        if [ -f /mnt/usb/data/restart_count ]; then
+            echo "  $(cat /mnt/usb/data/restart_count) restarts since last install"
+        else
+            _warn "restart_count not found"
+        fi
+        ;;
+
+    bt)
+        _header "Bluetooth dongle"
+        hciconfig 2>/dev/null || _err "hciconfig failed — dongle missing?"
+
+        _header "RFCOMM connections"
+        rfcomm 2>/dev/null || _warn "No RFCOMM connections"
+
+        _header "rfcomm-connect service"
+        sudo systemctl status rfcomm-connect.service --no-pager -l
+        ;;
+
+    # ── Maintenance ───────────────────────────────────────────────────────────
+
+    update)
+        _header "Pulling latest code"
+        cd "$REPO" && git pull
+
+        _header "Restarting collector"
+        sudo systemctl restart obd-collector.service
+        sleep 2
+        sudo systemctl status obd-collector.service --no-pager -l
+        ;;
+
+    # ── Help ─────────────────────────────────────────────────────────────────
+
+    help|--help|-h)
+        echo -e "${BOLD}Jarvis — Project 300K${RESET}"
+        echo ""
+        echo -e "${BOLD}Logs${RESET}"
+        echo "  jarvis logs              Tail live OBD log (Ctrl+C to stop)"
+        echo "  jarvis last [n]          Last n lines of log (default 50)"
+        echo "  jarvis journal [n]       Collector logs via journald"
+        echo "  jarvis sync-log [n]      Sync service logs via journald"
+        echo ""
+        echo -e "${BOLD}Services${RESET}"
+        echo "  jarvis status            Status of all 3 services"
+        echo "  jarvis restart           Restart obd-collector"
+        echo "  jarvis start             Start obd-collector"
+        echo "  jarvis stop              Stop obd-collector"
+        echo "  jarvis sync              Trigger sync now + show result"
+        echo ""
+        echo -e "${BOLD}Database${RESET}"
+        echo "  jarvis db                Open SQLite shell"
+        echo "  jarvis rows              Row counts + unsynced per table"
+        echo "  jarvis trips [n]         Last n trips (default 10)"
+        echo "  jarvis dtc               Recent DTC fault codes"
+        echo ""
+        echo -e "${BOLD}System${RESET}"
+        echo "  jarvis health            CPU temp, memory, disk, uptime"
+        echo "  jarvis bt                Bluetooth and RFCOMM status"
+        echo "  jarvis update            git pull + restart collector"
+        ;;
+
+    *)
+        _err "Unknown command: $1"
+        echo "Run 'jarvis help' to see available commands."
+        exit 1
+        ;;
+esac

@@ -55,6 +55,10 @@ python3 -m venv "$PI_DIR/venv"
 "$PI_DIR/venv/bin/pip" install --upgrade pip
 "$PI_DIR/venv/bin/pip" install -r "$PI_DIR/requirements.txt"
 
+echo "==> Installing jarvis"
+chmod +x "$PI_DIR/scripts/jarvis"
+sudo ln -sf "$PI_DIR/scripts/jarvis" /usr/local/bin/jarvis
+
 echo "==> Installing systemd services"
 sudo cp "$PI_DIR/systemd/rfcomm-connect.service" "$SYSTEMD_DIR/"
 sudo cp "$PI_DIR/systemd/obd-collector.service" "$SYSTEMD_DIR/"
