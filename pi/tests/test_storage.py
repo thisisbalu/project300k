@@ -129,6 +129,50 @@ class TestGetConnection:
         assert "integrity check failed" in caplog.text
         assert os.path.exists(db_path + ".corrupt")
 
+    def test_corrupt_db_moves_wal_and_shm_sidecars(self, tmp_path, caplog):
+        # The orphaned -wal would otherwise be replayed into the fresh DB,
+        # re-introducing corruption and crash-looping recovery.
+        import logging
+        from config import config
+        from storage import get_connection
+
+        db_path = str(tmp_path / "obd.db")
+        open(db_path, "w").close()
+        open(db_path + "-wal", "w").close()
+        open(db_path + "-shm", "w").close()
+
+        call_count = 0
+        original_connect = sqlite3.connect
+
+        def patched_connect(path, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                conn = MagicMock()
+                conn.row_factory = None
+                exec_iter = iter([
+                    MagicMock(**{"fetchone.return_value": ("wal",)}),
+                    MagicMock(),
+                    MagicMock(),
+                    MagicMock(),
+                    MagicMock(**{"fetchone.return_value": ("corruption found",)}),
+                ])
+                conn.execute = lambda *a, **k: next(exec_iter)
+                return conn
+            return original_connect(path, **kwargs)
+
+        with patch("storage.sqlite3.connect", side_effect=patched_connect), \
+             patch.object(config, "DB_PATH", db_path), \
+             caplog.at_level(logging.ERROR, logger="obd-collector"):
+            conn = get_connection()
+            conn.close()
+
+        # Original sidecars quarantined before the fresh DB opened, so the
+        # orphaned -wal can't be replayed into the new database. (The fresh
+        # connection then creates its own new -wal/-shm, which is expected.)
+        assert os.path.exists(db_path + ".corrupt-wal")
+        assert os.path.exists(db_path + ".corrupt-shm")
+
 
 # ---------------------------------------------------------------------------
 # init_schema()

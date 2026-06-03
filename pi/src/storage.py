@@ -29,6 +29,7 @@ because QueueWriter drains from a background thread, but all actual writes
 are serialised through the queue — no concurrent writes occur.
 """
 
+import os
 import sqlite3
 
 from config import config
@@ -103,20 +104,44 @@ def get_connection(_depth: int = 0) -> sqlite3.Connection:
             "renaming corrupt DB and starting fresh"
         )
         conn.close()
-        import os
-        corrupt_path = config.DB_PATH + ".corrupt"
-        try:
-            os.rename(config.DB_PATH, corrupt_path)
-        except OSError as e:
-            logger.error(f"Could not rename corrupt DB to {corrupt_path}: {e}")
-            raise
-        logger.warning(f"Corrupt DB saved to {corrupt_path}")
+        _quarantine_corrupt_db()
         # Recurse to open a fresh database. _depth prevents infinite recursion
         # if the drive is failing and every new file also fails integrity check.
         return get_connection(_depth=_depth + 1)
 
     logger.info(f"SQLite connected: {config.DB_PATH}")
     return conn
+
+
+def _quarantine_corrupt_db() -> None:
+    """Move a corrupt database and its WAL/SHM sidecars out of the way.
+
+    The -wal and -shm files MUST be moved alongside the main DB. Renaming only
+    obd.db leaves the orphaned -wal, which SQLite replays into the freshly
+    created database on next open — re-introducing the corruption, failing the
+    next integrity check, and turning recovery into a boot crash-loop (the
+    recursive open hits _depth>=2 and raises). The sidecars are renamed, not
+    deleted, so the corrupt data can be salvaged manually if needed.
+
+    Raises:
+        OSError: If any corrupt file cannot be moved — starting fresh is unsafe
+                 while an orphaned -wal could be replayed into the new DB.
+    """
+    suffix = ".corrupt"
+    moves = (
+        (config.DB_PATH, config.DB_PATH + suffix),
+        (config.DB_PATH + "-wal", config.DB_PATH + suffix + "-wal"),
+        (config.DB_PATH + "-shm", config.DB_PATH + suffix + "-shm"),
+    )
+    for src, dst in moves:
+        if not os.path.exists(src):
+            continue
+        try:
+            os.replace(src, dst)
+        except OSError as e:
+            logger.error(f"Could not move corrupt DB file {src} to {dst}: {e}")
+            raise
+    logger.warning(f"Corrupt DB quarantined to {config.DB_PATH + suffix}*")
 
 
 def init_schema(conn: sqlite3.Connection) -> None:
