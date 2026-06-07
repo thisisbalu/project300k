@@ -266,6 +266,30 @@ case "$cmd" in
         sudo systemctl status rfcomm-connect.service --no-pager -l
         ;;
 
+    # ── Datasette ────────────────────────────────────────────────────────────
+
+    datasette)
+        case "${2:-status}" in
+            start)
+                sudo systemctl start obd-datasette.service
+                sleep 1
+                sudo systemctl status obd-datasette.service --no-pager -l
+                ;;
+            stop)
+                sudo systemctl stop obd-datasette.service
+                _ok "Datasette stopped"
+                ;;
+            status)
+                sudo systemctl status obd-datasette.service --no-pager -l
+                ;;
+            *)
+                _err "Unknown datasette subcommand: $2"
+                echo "Usage: jarvis datasette [start|stop|status]"
+                exit 1
+                ;;
+        esac
+        ;;
+
     # ── Maintenance ───────────────────────────────────────────────────────────
 
     update)
@@ -302,6 +326,11 @@ case "$cmd" in
         echo "  jarvis trips [n]         Last n trips (default 10)"
         echo "  jarvis dtc               Recent DTC fault codes"
         echo "  jarvis ford [n]          Latest Ford Mode 22 readings (default 10)"
+        echo ""
+        echo -e "${BOLD}Datasette${RESET}"
+        echo "  jarvis datasette         Status of Datasette service"
+        echo "  jarvis datasette start   Start Datasette (browse at :8001)"
+        echo "  jarvis datasette stop    Stop Datasette"
         echo ""
         echo -e "${BOLD}System${RESET}"
         echo "  jarvis health            CPU temp, memory, disk, uptime"
