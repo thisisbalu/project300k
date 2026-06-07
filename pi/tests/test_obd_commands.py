@@ -122,6 +122,10 @@ class TestStandard5S:
         assert "o2_b1s1_v" in columns
         assert "o2_b1s2_v" in columns
 
+    def test_contains_fuel_rail(self, standard_5s):
+        columns = [p.column for p in standard_5s]
+        assert "fuel_rail_kpa" in columns
+
 
 # ---------------------------------------------------------------------------
 # STANDARD_30S tier
@@ -154,14 +158,125 @@ class TestStandard30S:
 
 
 # ---------------------------------------------------------------------------
-# Ford lists are empty (pending FORScan)
+# Ford PIDs — confirmed addresses from pid_log_20260605_190444.txt
 # ---------------------------------------------------------------------------
 
-def test_ford_lists_empty_pending_forscan():
-    from obd_commands import FORD_5S, FORD_10S, FORD_20S
-    assert FORD_5S == []
-    assert FORD_10S == []
-    assert FORD_20S == []
+def test_ford_5s_populated():
+    from obd_commands import FORD_5S
+    columns = {p.column for p in FORD_5S}
+    assert "trans_temp_c" in columns
+    assert "trans_gear" in columns
+    assert "tcc_ratio" in columns
+    assert all(p.table == "ford_obd_5s" for p in FORD_5S)
+    assert all(p.interval_s == 5 for p in FORD_5S)
+
+
+def test_ford_10s_populated():
+    from obd_commands import FORD_10S
+    columns = {p.column for p in FORD_10S}
+    assert "oil_pressure_kpa" in columns
+    assert "knock_retard_deg" in columns
+    assert "boost_desired_psi" in columns
+    assert "boost_actual_psi" in columns
+    assert "cac_temp_c" in columns
+    assert "wastegate_pct" in columns
+    assert "vct_intake_deg" in columns
+    assert all(p.table == "ford_obd_10s" for p in FORD_10S)
+    assert all(p.interval_s == 10 for p in FORD_10S)
+
+
+def test_ford_20s_populated():
+    from obd_commands import FORD_20S
+    columns = {p.column for p in FORD_20S}
+    assert "misfire_acc_cyl1" in columns
+    assert "misfire_acc_cyl2" in columns
+    assert "misfire_acc_cyl3" in columns
+    assert "misfire_acc_cyl4" in columns
+    assert all(p.table == "ford_obd_20s" for p in FORD_20S)
+    assert all(p.interval_s == 20 for p in FORD_20S)
+
+
+def test_ford_mode06_decoder_returns_none_on_empty():
+    from obd_commands import _mode06_misfire
+    decoder = _mode06_misfire()
+    assert decoder([]) is None
+
+
+def test_ford_mode06_decoder_returns_none_on_wrong_svc():
+    """Non-Mode-06 response must produce NULL."""
+    from obd_commands import _mode06_misfire
+    import unittest.mock as mock
+    decoder = _mode06_misfire()
+    frame = mock.Mock()
+    frame.data = bytes([0x10, 0x25, 0x62, 0xA2, 0x0B, 0x24, 0x00, 0x05])  # 0x62 = Mode 22, not Mode 06
+    msg = mock.Mock()
+    msg.frames = [frame]
+    assert decoder([msg]) is None
+
+
+def test_ford_mode06_decoder_happy_path():
+    """OBDMID=0x0B, count=5 should decode to 5."""
+    from obd_commands import _mode06_misfire
+    import unittest.mock as mock
+    decoder = _mode06_misfire()
+    frame = mock.Mock()
+    frame.data = bytes([0x10, 0x25, 0x46, 0xA2, 0x0B, 0x24, 0x00, 0x05])
+    msg = mock.Mock()
+    msg.frames = [frame]
+    assert decoder([msg]) == 5
+
+
+def test_ford_mode06_decoder_happy_path_large_count():
+    """16-bit count (e.g. 300 = 0x012C) must decode correctly."""
+    from obd_commands import _mode06_misfire
+    import unittest.mock as mock
+    decoder = _mode06_misfire()
+    frame = mock.Mock()
+    frame.data = bytes([0x10, 0x25, 0x46, 0xA3, 0x0B, 0x24, 0x01, 0x2C])
+    msg = mock.Mock()
+    msg.frames = [frame]
+    assert decoder([msg]) == 300
+
+
+def test_ford_mode06_decoder_returns_none_on_wrong_obdmid():
+    """Any OBDMID other than 0x0B in position data[4] must return None."""
+    from obd_commands import _mode06_misfire
+    import unittest.mock as mock
+    decoder = _mode06_misfire()
+    frame = mock.Mock()
+    frame.data = bytes([0x10, 0x25, 0x46, 0xA2, 0xFF, 0x24, 0x00, 0x00])  # 0xFF = wrong OBDMID
+    msg = mock.Mock()
+    msg.frames = [frame]
+    assert decoder([msg]) is None
+
+
+def test_ford_mode22_decoder_returns_none_on_bad_response():
+    from obd_commands import _mode22
+    decoder = _mode22(2, lambda d: d[4])
+    assert decoder([]) is None
+
+
+def test_ford_mode22_decoder_returns_none_on_nrc():
+    """NRC response (data[1] == 0x7F) should produce NULL, not a bad value."""
+    from obd_commands import _mode22
+    import unittest.mock as mock
+    decoder = _mode22(2, lambda d: d[4])
+    frame = mock.Mock()
+    frame.data = bytes([0x03, 0x7F, 0x22, 0x31])
+    msg = mock.Mock()
+    msg.frames = [frame]
+    assert decoder([msg]) is None
+
+
+def test_ford_mode22_decoder_happy_path():
+    from obd_commands import _mode22
+    import unittest.mock as mock
+    decoder = _mode22(2, lambda d: (d[4] * 256) + d[5])
+    frame = mock.Mock()
+    frame.data = bytes([0x05, 0x62, 0x04, 0x15, 0x01, 0x48])
+    msg = mock.Mock()
+    msg.frames = [frame]
+    assert decoder([msg]) == 328  # 0x01 * 256 + 0x48 = 328 kPa
 
 
 # ---------------------------------------------------------------------------

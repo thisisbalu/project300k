@@ -49,15 +49,6 @@ cd pi && /usr/bin/python3 -m pytest tests/test_trip.py::test_trip_start_requires
 
 Tests run without hardware. `conftest.py` sets required env vars before any `src/` import and inserts `src/` into `sys.path` — no install step needed.
 
-## Part 1 Status (Pi collector)
-All 16 coding tasks complete. Full code review done — all critical bugs fixed. 199 unit tests, 97% coverage. Ready for hardware deployment.
-
-Remaining before deployment:
-- FORScan baseline scan (needs OBDLink MX+ + car) — confirms Mode 22 hex addresses
-- Ford PID entries in `obd_commands.py` (after FORScan)
-- Pi OS setup, DS3231 wiring, USB drive format (ext4), BT pairing
-- `install.sh` run + `config.env` filled in
-
 ## Conventions
 - No Claude/Anthropic attribution anywhere — no co-author trailers, no PR descriptions, nothing GitHub-visible
 - Commit messages are plain, no co-author lines
@@ -86,12 +77,20 @@ Remaining before deployment:
 
 **All SQLite writes must go through `QueueWriter`**: Use `enqueue()` for INSERT paths and `direct_execute()` for UPDATE paths. Never call `conn.execute()` directly from outside `QueueWriter` — `_db_lock` will not protect it.
 
+**DTC scans must stop the async loop first**: `collector.query_sync()` stops `obd.Async`, issues the synchronous `GET_DTC` query, then restarts the loop. Without this, the async polling thread consumes the DTC response bytes on `/dev/rfcomm0` and the synchronous `query()` call times out. A `_dtc_lock` serialises concurrent DTC scans (e.g. trip-start and trip-end overlapping).
+
+**Collector uses combined rows per table, not one row per PID**: Each PID callback accumulates its value into a per-table buffer (`_table_buffer`). When `interval_s` elapses for that table, the entire buffer is flushed as one combined row via `QueueWriter.enqueue()`. This means `obd_1s` gets one row/second with `rpm`, `speed_kmh`, `throttle_pct`, and `load_pct` all in a single row — not four separate sparse rows. The schema is designed around this.
+
 **Shutdown order is fixed** — DTC threads must finish before disconnect; queue must drain before `conn.close()`:
 ```
 collector.stop() → trip_manager.stop() → queue_writer.stop() → obd_connection.disconnect() → conn.close()
 ```
 
-**systemd services** (4 total): `obd-collector.service` (Type=notify, WatchdogSec=60), `obd-sync.service` (oneshot), `obd-sync.timer` (every 5 min after boot), `rfcomm-connect.service` (Bluetooth RFCOMM binding).
+**systemd services** (4 total):
+- `obd-collector.service` — Type=notify, WatchdogSec=60, Restart=always
+- `obd-sync.service` — oneshot, runs the sync script
+- `obd-sync.timer` — fires `obd-sync.service` every 5 min after boot
+- `rfcomm-connect.service` — binds `/dev/rfcomm0` to the OBDLink MX+ MAC address at boot; uses `Wants=` (not `Requires=`) so `obd-collector.service` starts even if BT binding fails on the first attempt
 
 ## Data Volume
 ~192,000 rows/month based on 1hr/day Mon–Sat + 4hrs Sunday.

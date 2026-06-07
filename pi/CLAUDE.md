@@ -39,13 +39,13 @@ obd.OBD("/dev/rfcomm0", fast=False, timeout=30)
 | Table | Interval | PIDs |
 |-------|----------|------|
 | obd_1s | 1s | rpm, speed_kmh, throttle_pct, load_pct |
-| obd_5s | 5s | coolant_temp_c, oil_temp_c, intake_air_temp_c, maf_gs, map_kpa, baro_pressure_kpa, stft_pct, ltft_pct, o2_b1s1_v, o2_b1s2_v, timing_advance_deg |
+| obd_5s | 5s | coolant_temp_c, oil_temp_c, intake_air_temp_c, maf_gs, map_kpa, baro_pressure_kpa, stft_pct, ltft_pct, o2_b1s1_v, o2_b1s2_v, timing_advance_deg, fuel_rail_kpa |
 | obd_30s | 30s | battery_v, fuel_level_pct, ambient_air_temp_c, distance_since_dtc_cleared_km |
-| ford_obd_5s | 5s (TBC) | trans_temp_c, trans_gear, tcc_ratio |
-| ford_obd_10s | 10s (TBC) | knock_retard_deg, boost_desired_psi, boost_actual_psi, wastegate_pct |
-| ford_obd_20s | 20s (TBC) | misfire_cyl1–4, fuel_rail_pressure_psi |
+| ford_obd_5s | 5s | trans_temp_c, trans_gear, tcc_ratio |
+| ford_obd_10s | 10s | oil_pressure_kpa, knock_retard_deg, boost_desired_psi, boost_actual_psi, cac_temp_c, wastegate_pct, vct_intake_deg, vct_exhaust_deg |
+| ford_obd_20s | 20s | misfire_acc_cyl1–4 |
 
-Ford tables are empty stubs — populate after FORScan baseline scan confirms hex addresses.
+Ford 5S and 10S addresses confirmed via pid_log_20260605_190444.txt. Ford 20S misfire addresses confirmed 2026-06-06 via Mode 06 scan — TIDs 06A2–06A5, OBDMID 0x0B. Fuel rail pressure address still not found.
 
 Polling tiers are implemented via a single `obd.Async` connection. python-obd 0.7.3 does
 not support per-watcher intervals — all PIDs fire at ~1Hz. Each callback uses a
@@ -153,17 +153,43 @@ conn.close()
 ```
 Order matters — DTC threads must finish before disconnect; queue must drain before close.
 
-## Mode 22 Ford PIDs (confirmed hex addresses)
-| PID | Parameter | Formula |
-|-----|-----------|---------|
-| 22F45C | Oil Temp | (A-40)*1.8+32 → convert to C |
-| 220318 | Knock Retard | Signed(A)/16 degrees |
-| 22033E | Desired Boost | ((256*A)+B)/128*0.145-14.7 PSI |
-| 22D137 | Actual Boost (TBC formula) | TBD |
-| 2203CA | Wastegate | raw % |
-| 221E1C | Trans Fluid Temp | ([A:B]*0.1125)+32 → convert to C |
-| 221E12 | Current Gear | A |
-| 221E15 | TCC Ratio | [A:B]/4096 |
+## Mode 22 Ford PIDs
+All addresses and formulas confirmed via pid_log_20260605_190444.txt (50-run drive session).
+Frame layout: `[len, 0x62, PID_H, PID_L, data_A, data_B, ...]` — data starts at index 4.
 
-Misfire via Mode 06: 06A20C–06A50C (cylinders 1–4).
-Fuel rail pressure hex address unconfirmed — verify via FORScan.
+### PCM (Engine — header 7E0)
+| PID | Column | Formula | Notes |
+|-----|--------|---------|-------|
+| 220415 | oil_pressure_kpa | `(A*256)+B` | 294–402 kPa observed at normal operating temp |
+| 2203EC | knock_retard_deg | `s8(A)/2 + B/512` | Signed; mostly 0.0°, occasional -0.5 to -1.0° at light load |
+| 220461 | boost_desired_psi | `((A*256)+B) * 0.0145` | 0.0 psi at light city driving; verify under WOT |
+| 220462 | boost_actual_psi | `((A*256)+B) * 0.0145` | Same scale as desired; gap = boost leak or turbo wear |
+| 2203CA | cac_temp_c | `s8(A)` (1 byte) | Charge air cooler temp; 84–88°C observed |
+| 2203E3 | wastegate_pct | `((A*256)+B) / 100` | 15–21% at light driving |
+| 220303 | vct_intake_deg | `s16(A,B) / 16` | 8.0° steady state; varies under load |
+| 220304 | vct_exhaust_deg | `(u16 - 26858) / 256` | Scale confirmed as /256. BASE=26858 derived from warm city driving (exhaust cam parked ≈0°). Confirm BASE once vs FORScan at warm idle. Observed: 0° cruise, -1° fuel-cut decel, +8° TCC lockup, +9° hard downshift |
+
+### TCM (Transmission — header 7E1)
+| PID | Column | Formula | Notes |
+|-----|--------|---------|-------|
+| 221E1C | trans_temp_c | `s16(A,B) / 16` | 79–85°C observed; warming through session |
+| 221E12 | trans_gear | `A` (1 byte) | Values 1–6 confirmed as gear. Occasional values >8 during shifts — stored raw |
+| 221E1F | tcc_ratio | `A / 255` | 0.0 = unlocked, 1.0 = fully locked; partial values = TCC engaging |
+
+### Mode 06 Misfire Accumulators (PCM header 7E0)
+Confirmed 2026-06-06. Multi-frame response (37 bytes, 4 CAN frames). First-frame layout:
+`[0x10, 0x25, 0x46, TID, 0x0B, 0x24, count_hi, count_lo, ...]`
+OBDMID 0x0B = misfire accumulator, SDTID 0x24 = unsigned count × 1. Value at data[6]/data[7].
+
+| TID | Column | Formula | Notes |
+|-----|--------|---------|-------|
+| 06A2 | misfire_acc_cyl1 | `(data[6]<<8)\|data[7]` | cyl1 cumulative misfires, range 0–65535 |
+| 06A3 | misfire_acc_cyl2 | `(data[6]<<8)\|data[7]` | cyl2 |
+| 06A4 | misfire_acc_cyl3 | `(data[6]<<8)\|data[7]` | cyl3 |
+| 06A5 | misfire_acc_cyl4 | `(data[6]<<8)\|data[7]` | cyl4 |
+
+### Not yet found / resolved
+| Target | Resolution |
+|--------|-----------|
+| fuel_rail_kpa | Resolved — standard PID 0x23 (`FUEL_RAIL_PRESSURE_DIRECT`) responds; added to obd_5s |
+| oil_temp_c (Mode 22) | Not needed — Mode 01 OIL_TEMP (0x5C) works |

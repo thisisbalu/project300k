@@ -36,7 +36,7 @@ from config import config
 from logger import logger
 
 # Increment this when the schema changes — triggers migration logic.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 4
 
 
 def get_connection(_depth: int = 0) -> sqlite3.Connection:
@@ -267,6 +267,7 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             o2_b1s1_v             REAL,   -- O2 sensor bank1 sensor1 voltage
             o2_b1s2_v             REAL,   -- O2 sensor bank1 sensor2 voltage
             timing_advance_deg    REAL,   -- ignition timing advance degrees
+            fuel_rail_kpa         REAL,   -- GDI fuel rail pressure kPa (PID 0x23)
             synced                INTEGER DEFAULT 0
         );
 
@@ -284,8 +285,7 @@ def _create_tables(conn: sqlite3.Connection) -> None:
         );
 
         -- ford_obd_5s — Ford Mode 22 TCM: transmission temp, gear, TCC ratio.
-        -- Stub table created at schema init. Populated after FORScan confirms
-        -- Mode 22 TCM addresses (0x221E1C, 0x221E12, 0x221E15) on this VIN.
+        -- Addresses confirmed via pid_log_20260605_190444.txt.
         CREATE TABLE IF NOT EXISTS ford_obd_5s (
             id           TEXT PRIMARY KEY,
             trip_id      TEXT NOT NULL REFERENCES trips(id),
@@ -296,33 +296,34 @@ def _create_tables(conn: sqlite3.Connection) -> None:
             synced       INTEGER DEFAULT 0
         );
 
-        -- ford_obd_10s — Ford Mode 22 PCM: boost and knock data.
-        -- Stub table created at schema init. Populated after FORScan confirms
-        -- addresses (0x220318, 0x22033E, 0x22D137, 0x2203CA) on this VIN.
+        -- ford_obd_10s — Ford Mode 22 PCM: boost, knock, VCT, oil pressure.
+        -- Addresses confirmed via pid_log_20260605_190444.txt.
         CREATE TABLE IF NOT EXISTS ford_obd_10s (
             id                TEXT PRIMARY KEY,
             trip_id           TEXT NOT NULL REFERENCES trips(id),
             timestamp         TEXT NOT NULL,
-            knock_retard_deg  REAL, -- timing retard from knock °  (Mode 22 0x220318)
-            boost_desired_psi REAL, -- requested boost PSI          (Mode 22 0x22033E)
-            boost_actual_psi  REAL, -- measured boost PSI           (Mode 22 0x22D137, formula TBD)
-            wastegate_pct     REAL, -- wastegate duty cycle %       (Mode 22 0x2203CA)
+            oil_pressure_kpa  REAL, -- engine oil pressure kPa    (Mode 22 0x220415)
+            knock_retard_deg  REAL, -- timing retard from knock °  (Mode 22 0x2203EC)
+            boost_desired_psi REAL, -- requested boost PSI         (Mode 22 0x220461)
+            boost_actual_psi  REAL, -- measured boost PSI          (Mode 22 0x220462)
+            cac_temp_c        REAL, -- charge air cooler temp °C   (Mode 22 0x2203CA)
+            wastegate_pct     REAL, -- wastegate duty cycle %      (Mode 22 0x2203E3)
+            vct_intake_deg    REAL, -- VCT intake position °        (Mode 22 0x220303)
+            vct_exhaust_deg   REAL, -- VCT exhaust position °       (Mode 22 0x220304, BASE provisional)
             synced            INTEGER DEFAULT 0
         );
 
-        -- ford_obd_20s — Ford Mode 22/Mode 06 PCM: misfire counters + fuel rail.
-        -- Stub table created at schema init. Populated after FORScan confirms
-        -- Mode 06 misfire addresses and fuel rail pressure address on this VIN.
+        -- ford_obd_20s — Mode 06 PCM: misfire accumulators per cylinder.
+        -- Addresses confirmed 2026-06-06: TIDs 06A2–06A5, OBDMID 0x0B = accumulator.
         CREATE TABLE IF NOT EXISTS ford_obd_20s (
-            id                     TEXT PRIMARY KEY,
-            trip_id                TEXT NOT NULL REFERENCES trips(id),
-            timestamp              TEXT NOT NULL,
-            misfire_cyl1           INTEGER, -- cyl 1 misfire count (Mode 06 0x06A20C)
-            misfire_cyl2           INTEGER, -- cyl 2 misfire count (Mode 06 0x06A30C)
-            misfire_cyl3           INTEGER, -- cyl 3 misfire count (Mode 06 0x06A40C)
-            misfire_cyl4           INTEGER, -- cyl 4 misfire count (Mode 06 0x06A50C)
-            fuel_rail_pressure_psi REAL,    -- fuel rail PSI       (Mode 22, address TBD)
-            synced                 INTEGER DEFAULT 0
+            id                TEXT PRIMARY KEY,
+            trip_id           TEXT NOT NULL REFERENCES trips(id),
+            timestamp         TEXT NOT NULL,
+            misfire_acc_cyl1  INTEGER, -- cumulative misfire count cyl1 (Mode 06 TID 06A2)
+            misfire_acc_cyl2  INTEGER, -- cumulative misfire count cyl2 (Mode 06 TID 06A3)
+            misfire_acc_cyl3  INTEGER, -- cumulative misfire count cyl3 (Mode 06 TID 06A4)
+            misfire_acc_cyl4  INTEGER, -- cumulative misfire count cyl4 (Mode 06 TID 06A5)
+            synced            INTEGER DEFAULT 0
         );
 
         -- dtc_events — fault codes scanned at trip start and trip end.

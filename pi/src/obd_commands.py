@@ -7,17 +7,16 @@ SQLite table, the column name, and the polling interval. This lets collector.py
 register all watchers with a single loop rather than hardcoding each one.
 
 Standard Mode 01 PIDs (SAE J1979) are fully defined here and ready to use.
-Ford Mode 22 enhanced PIDs are stubbed — populated after FORScan baseline
-scan confirms the hex addresses on this specific VIN.
+Ford Mode 22 addresses and formulas confirmed via pid_log_20260605_190444.txt.
 
 Polling tiers:
     STANDARD_1S   — 1s:  core engine state (RPM, speed, throttle, load)
     STANDARD_5S   — 5s:  thermals, air/fuel, O2 sensors
     STANDARD_30S  — 30s: battery voltage, fuel level
 
-    FORD_5S       — 5s (TBC):  transmission data (Mode 22, TCM module)
-    FORD_10S      — 10s (TBC): boost and knock (Mode 22, PCM module)
-    FORD_20S      — 20s (TBC): misfire counters, fuel rail (Mode 22 + Mode 06)
+    FORD_5S       — 5s:  transmission data (Mode 22, TCM — confirmed)
+    FORD_10S      — 10s: boost, knock, VCT, oil pressure (Mode 22, PCM — confirmed)
+    FORD_20S      — 20s: misfire accumulators per cylinder (Mode 06, confirmed)
 
 ALL_PIDS is a flat list of every active PIDConfig, consumed by collector.py.
 
@@ -30,7 +29,41 @@ References:
 from __future__ import annotations
 
 import obd
+from obd import OBDCommand, ECU
 from dataclasses import dataclass
+
+
+def _s8(b: int) -> int:
+    return b - 256 if b > 127 else b
+
+
+def _s16(hi: int, lo: int) -> int:
+    v = (hi << 8) | lo
+    return v - 65536 if v > 32767 else v
+
+
+def _mode22(n_data: int, formula):
+    """Decoder factory for Ford Mode 22 PIDs.
+
+    Frame layout confirmed from pid_log_20260605_190444:
+        [len, 0x62, PID_H, PID_L, data_A, data_B, ...]
+    Data bytes start at index 4. Returns None on any error so the
+    collector stores NULL rather than crashing or carrying stale values.
+    """
+    min_len = 4 + n_data
+
+    def decoder(messages):
+        if not messages:
+            return None
+        try:
+            data = list(bytes(messages[0].frames[0].data))
+            if len(data) < min_len or data[1] != 0x62:
+                return None
+            return formula(data)
+        except (AttributeError, IndexError, TypeError, ZeroDivisionError):
+            return None
+
+    return decoder
 
 
 @dataclass(frozen=True)
@@ -173,6 +206,14 @@ STANDARD_5S: list[PIDConfig] = [
         # Ignition timing advance in degrees. Context for knock retard readings
         # in ford_obd_10s — shows how aggressively ECU is advancing timing.
     ),
+    PIDConfig(
+        command=obd.commands.FUEL_RAIL_PRESSURE_DIRECT,
+        table="obd_5s",
+        column="fuel_rail_kpa",
+        interval_s=5,
+        # GDI high-pressure fuel rail (PID 0x23). Idle ≈1400 kPa; higher under load.
+        # Long-term decline at same load points = high-pressure fuel pump wear.
+    ),
 ]
 
 STANDARD_30S: list[PIDConfig] = [
@@ -217,31 +258,170 @@ STANDARD_30S: list[PIDConfig] = [
 
 # ---------------------------------------------------------------------------
 # Ford Mode 22 Enhanced PIDs — requires OBDLink MX+ (not generic ELM327).
-# Stubbed until FORScan baseline scan confirms hex addresses on this VIN.
+# All addresses and formulas confirmed via pid_log_20260605_190444.txt
+# (50-run drive session on 2023 Bronco Sport Badlands 2.0L EcoBoost).
 # ---------------------------------------------------------------------------
 
-# TCM module — transmission data
-# Expected: trans_temp_c (221E1C), trans_gear (221E12), tcc_ratio (221E15)
-FORD_5S: list[PIDConfig] = []
-# TODO: Task 7 (Part 2) — define after FORScan scan confirms TCM PID addresses
+# --- PCM commands ---
 
-# PCM module — turbo and knock data
-# Expected: knock_retard_deg (220318), boost_desired_psi (22033E),
-#           boost_actual_psi (22D137), wastegate_pct (2203CA)
-FORD_10S: list[PIDConfig] = []
-# TODO: Task 7 (Part 2) — define after FORScan scan confirms PCM PID addresses
+_FORD_OIL_PRESSURE = OBDCommand(
+    "oil_pressure_kpa", "Engine oil pressure",
+    b"220415", 6,
+    _mode22(2, lambda d: (d[4] * 256) + d[5]),
+    ECU.ALL, fast=False,
+)
 
-# PCM module + Mode 06 — misfire counters and fuel rail pressure
-# Expected: misfire_cyl1-4 (Mode 06: 06A20C-06A50C),
-#           fuel_rail_pressure_psi (Mode 22: address TBD from FORScan)
-FORD_20S: list[PIDConfig] = []
-# TODO: Task 7 (Part 2) — define after FORScan scan confirms misfire + fuel rail addresses
+_FORD_KNOCK_RETARD = OBDCommand(
+    "knock_retard_deg", "Ignition timing retard from knock",
+    b"2203EC", 6,
+    _mode22(2, lambda d: round(_s8(d[4]) / 2 + d[5] / 512, 3)),
+    ECU.ALL, fast=False,
+)
+
+_FORD_BOOST_DESIRED = OBDCommand(
+    "boost_desired_psi", "Desired turbo boost pressure",
+    b"220461", 6,
+    _mode22(2, lambda d: round(((d[4] * 256) + d[5]) * 0.0145, 2)),
+    ECU.ALL, fast=False,
+)
+
+_FORD_BOOST_ACTUAL = OBDCommand(
+    "boost_actual_psi", "Actual turbo boost pressure",
+    b"220462", 6,
+    _mode22(2, lambda d: round(((d[4] * 256) + d[5]) * 0.0145, 2)),
+    ECU.ALL, fast=False,
+)
+
+_FORD_CAC_TEMP = OBDCommand(
+    "cac_temp_c", "Charge air cooler temperature",
+    b"2203CA", 5,
+    _mode22(1, lambda d: _s8(d[4])),
+    ECU.ALL, fast=False,
+)
+
+_FORD_WASTEGATE = OBDCommand(
+    "wastegate_pct", "Wastegate duty cycle",
+    b"2203E3", 6,
+    _mode22(2, lambda d: round(((d[4] * 256) + d[5]) / 100, 2)),
+    ECU.ALL, fast=False,
+)
+
+_FORD_VCT_INTAKE = OBDCommand(
+    "vct_intake_deg", "Variable cam timing intake position",
+    b"220303", 6,
+    _mode22(2, lambda d: round(_s16(d[4], d[5]) / 16, 2)),
+    ECU.ALL, fast=False,
+)
+
+_FORD_VCT_EXHAUST = OBDCommand(
+    "vct_exhaust_deg", "Variable cam timing exhaust position",
+    b"220304", 6,
+    # Scale is /256 (not /16 like intake). BASE=26858 derived from warm city
+    # driving where exhaust cam is parked at ~0°. Confirm BASE once against
+    # FORScan at warm idle before trusting absolute values; relative trends
+    # (TCC lockup ~+8°, hard downshift ~+9°, decel ~-1°) are valid regardless.
+    _mode22(2, lambda d: round(((d[4] * 256) + d[5] - 26858) / 256, 2)),
+    ECU.ALL, fast=False,
+)
+
+# --- TCM commands ---
+
+_FORD_TRANS_TEMP = OBDCommand(
+    "trans_temp_c", "Transmission fluid temperature",
+    b"221E1C", 6,
+    _mode22(2, lambda d: round(_s16(d[4], d[5]) / 16, 1)),
+    ECU.ALL, fast=False,
+)
+
+_FORD_TRANS_GEAR = OBDCommand(
+    "trans_gear", "Current transmission gear",
+    b"221E12", 5,
+    # Raw byte — values 1–6 confirmed as gear number. Occasional values
+    # above 8 observed during shifts; store raw for analysis.
+    _mode22(1, lambda d: d[4]),
+    ECU.ALL, fast=False,
+)
+
+_FORD_TCC_RATIO = OBDCommand(
+    "tcc_ratio", "Torque converter clutch lockup ratio",
+    b"221E1F", 5,
+    _mode22(1, lambda d: round(d[4] / 255, 3)),
+    ECU.ALL, fast=False,
+)
+
+
+def _mode06_misfire():
+    """Decoder for Mode 06 TID A2–A5 misfire accumulator (OBDMID 0x0B).
+
+    Mode 06 responses are multi-frame (37 bytes). ELM327 passes raw first-frame
+    CAN bytes: [0x10, 0x25, 0x46, TID, 0x0B, 0x24, count_hi, count_lo, ...]
+    OBDMID 0x0B confirmed as misfire accumulator via 2026-06-06 live scan.
+    Test value bytes at data[6]/data[7] = cumulative misfire count for cylinder.
+    """
+    def decoder(messages):
+        if not messages:
+            return None
+        try:
+            data = list(bytes(messages[0].frames[0].data))
+            # First Frame: data[2]=0x46 (Mode 06 response), data[4]=0x0B (OBDMID)
+            if len(data) < 8 or data[2] != 0x46 or data[4] != 0x0B:
+                return None
+            return (data[6] << 8) | data[7]
+        except (AttributeError, IndexError, TypeError):
+            return None
+    return decoder
+
+
+_MISFIRE_DECODER = _mode06_misfire()
+
+_FORD_MISFIRE_CYL1 = OBDCommand(
+    "misfire_acc_cyl1", "Misfire accumulator cylinder 1",
+    b"06A2", 8, _MISFIRE_DECODER, ECU.ALL, fast=False,
+)
+_FORD_MISFIRE_CYL2 = OBDCommand(
+    "misfire_acc_cyl2", "Misfire accumulator cylinder 2",
+    b"06A3", 8, _MISFIRE_DECODER, ECU.ALL, fast=False,
+)
+_FORD_MISFIRE_CYL3 = OBDCommand(
+    "misfire_acc_cyl3", "Misfire accumulator cylinder 3",
+    b"06A4", 8, _MISFIRE_DECODER, ECU.ALL, fast=False,
+)
+_FORD_MISFIRE_CYL4 = OBDCommand(
+    "misfire_acc_cyl4", "Misfire accumulator cylinder 4",
+    b"06A5", 8, _MISFIRE_DECODER, ECU.ALL, fast=False,
+)
+
+
+# TCM module — transmission data. Addresses confirmed.
+FORD_5S: list[PIDConfig] = [
+    PIDConfig(command=_FORD_TRANS_TEMP, table="ford_obd_5s", column="trans_temp_c", interval_s=5),
+    PIDConfig(command=_FORD_TRANS_GEAR, table="ford_obd_5s", column="trans_gear",   interval_s=5),
+    PIDConfig(command=_FORD_TCC_RATIO,  table="ford_obd_5s", column="tcc_ratio",    interval_s=5),
+]
+
+# PCM module — boost, knock, VCT, oil pressure. Addresses confirmed.
+FORD_10S: list[PIDConfig] = [
+    PIDConfig(command=_FORD_OIL_PRESSURE,  table="ford_obd_10s", column="oil_pressure_kpa",  interval_s=10),
+    PIDConfig(command=_FORD_KNOCK_RETARD,  table="ford_obd_10s", column="knock_retard_deg",   interval_s=10),
+    PIDConfig(command=_FORD_BOOST_DESIRED, table="ford_obd_10s", column="boost_desired_psi",  interval_s=10),
+    PIDConfig(command=_FORD_BOOST_ACTUAL,  table="ford_obd_10s", column="boost_actual_psi",   interval_s=10),
+    PIDConfig(command=_FORD_CAC_TEMP,      table="ford_obd_10s", column="cac_temp_c",         interval_s=10),
+    PIDConfig(command=_FORD_WASTEGATE,     table="ford_obd_10s", column="wastegate_pct",       interval_s=10),
+    PIDConfig(command=_FORD_VCT_INTAKE,    table="ford_obd_10s", column="vct_intake_deg",      interval_s=10),
+    PIDConfig(command=_FORD_VCT_EXHAUST,   table="ford_obd_10s", column="vct_exhaust_deg",     interval_s=10),
+]
+
+# PCM module — misfire accumulators. Mode 06 TIDs A2–A5, confirmed 2026-06-06.
+FORD_20S: list[PIDConfig] = [
+    PIDConfig(command=_FORD_MISFIRE_CYL1, table="ford_obd_20s", column="misfire_acc_cyl1", interval_s=20),
+    PIDConfig(command=_FORD_MISFIRE_CYL2, table="ford_obd_20s", column="misfire_acc_cyl2", interval_s=20),
+    PIDConfig(command=_FORD_MISFIRE_CYL3, table="ford_obd_20s", column="misfire_acc_cyl3", interval_s=20),
+    PIDConfig(command=_FORD_MISFIRE_CYL4, table="ford_obd_20s", column="misfire_acc_cyl4", interval_s=20),
+]
 
 
 # ---------------------------------------------------------------------------
 # ALL_PIDS — flat list of every active PIDConfig consumed by collector.py.
-# Ford lists are empty until FORScan confirms addresses — adding them here
-# means collector.py requires no changes when Ford PIDs are enabled.
 # ---------------------------------------------------------------------------
 
 ALL_PIDS: list[PIDConfig] = [
