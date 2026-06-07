@@ -165,10 +165,59 @@ def test_ford_5s_populated():
     from obd_commands import FORD_5S
     columns = {p.column for p in FORD_5S}
     assert "trans_temp_c" in columns
+    assert "trans_oil_temp2_c" in columns
+    assert "trans_line_pressure_kpa" in columns
     assert "trans_gear" in columns
     assert "tcc_ratio" in columns
     assert all(p.table == "ford_obd_5s" for p in FORD_5S)
     assert all(p.interval_s == 5 for p in FORD_5S)
+
+
+def test_trans_gear_returns_none_for_park_state():
+    """0x46 is the TCM park-state code — must store NULL, not 70."""
+    from obd_commands import _mode22
+    import unittest.mock as mock
+    decoder = _mode22(1, lambda d: d[4] if 1 <= d[4] <= 8 else None)
+    frame = mock.Mock()
+    frame.data = bytes([0x04, 0x62, 0x1E, 0x12, 0x46])  # d[4]=0x46=Park
+    msg = mock.Mock()
+    msg.frames = [frame]
+    assert decoder([msg]) is None
+
+
+def test_trans_gear_returns_gear_during_driving():
+    from obd_commands import _mode22
+    import unittest.mock as mock
+    decoder = _mode22(1, lambda d: d[4] if 1 <= d[4] <= 8 else None)
+    for gear in range(1, 7):
+        frame = mock.Mock()
+        frame.data = bytes([0x04, 0x62, 0x1E, 0x12, gear])
+        msg = mock.Mock()
+        msg.frames = [frame]
+        assert decoder([msg]) == gear
+
+
+def test_tcc_ratio_returns_none_for_park_state():
+    """0x46 in tcc_ratio = Park state code — must store NULL, not 0.275."""
+    from obd_commands import _mode22
+    import unittest.mock as mock
+    decoder = _mode22(1, lambda d: round(d[4] / 255, 3) if d[4] != 0x46 else None)
+    frame = mock.Mock()
+    frame.data = bytes([0x04, 0x62, 0x1E, 0x1F, 0x46])
+    msg = mock.Mock()
+    msg.frames = [frame]
+    assert decoder([msg]) is None
+
+
+def test_tcc_ratio_locked():
+    from obd_commands import _mode22
+    import unittest.mock as mock
+    decoder = _mode22(1, lambda d: round(d[4] / 255, 3) if d[4] != 0x46 else None)
+    frame = mock.Mock()
+    frame.data = bytes([0x04, 0x62, 0x1E, 0x1F, 0xFF])  # fully locked
+    msg = mock.Mock()
+    msg.frames = [frame]
+    assert decoder([msg]) == 1.0
 
 
 def test_ford_10s_populated():

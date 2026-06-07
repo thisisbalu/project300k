@@ -20,6 +20,9 @@ Continuous loop (logs to file — use for drive sessions):
 Scan mode (probe candidate addresses for unknown PIDs):
   python validate_ford_pids.py /dev/tty.OBDLinkMX66328 --scan
 
+TCM sweep (discover all 221Exx addresses the TCM responds to):
+  python validate_ford_pids.py /dev/tty.OBDLinkMX66328 --scan-tcm
+
 Find your port:
   ls /dev/tty.* | grep -i obd
 """
@@ -36,6 +39,7 @@ PORT = sys.argv[1] if len(sys.argv) > 1 else "/dev/tty.OBDLinkMX66328"
 
 LOOP = "--loop" in sys.argv
 SCAN = "--scan" in sys.argv
+SCAN_TCM = "--scan-tcm" in sys.argv
 INTERVAL = 3
 for i, arg in enumerate(sys.argv):
     if arg == "--loop" and i + 1 < len(sys.argv):
@@ -130,10 +134,13 @@ ENGINE_PIDS = [
     ("boost_actual_psi",   b"220462", 6, lambda d: round(((d[4] * 256) + d[5]) * 0.0145, 2),    "psi"),
     ("cac_temp_c",         b"2203CA", 5, lambda d: s8(d[4]),                                     "°C"),
     ("wastegate_pct",      b"2203E3", 6, lambda d: round(((d[4] * 256) + d[5]) / 100, 2),       "%"),
-    ("vct_intake_deg",     b"220303", 6, lambda d: round(s16(d[4], d[5]) / 16, 2),              "°"),
+    # 220303 returns 4 data bytes: d[4:6]=desired angle, d[6:8]=actual angle.
+    # FORScan VCT_INT_ACT1 confirmed against d[6]/d[7] at warm idle (2026-06-06).
+    ("vct_intake_deg",     b"220303", 8, lambda d: round(s16(d[6], d[7]) / 16, 2),              "°"),
 
-    # Formula confirmed: scale /256, BASE=26858 from warm city driving (exhaust cam parked ≈0°)
-    ("vct_exhaust_deg",    b"220304", 6, lambda d: round(((d[4]*256)+d[5]-26858)/256, 2),       "°"),
+    # BASE=29287 confirmed against FORScan VCT_EXH_ACT1=0.00° at warm idle Park 2026-06-06.
+    # Negative values = exhaust cam retarding from base for internal EGR.
+    ("vct_exhaust_deg",    b"220304", 6, lambda d: round(((d[4]*256)+d[5]-29287)/256, 2),       "°"),
 
     # Mode 06 misfire counters — confirmed responding 2026-06-06.
     # Raw first CAN frame layout: [0x10, len, 0x46, TID, OBDMID, SDTID, val_hi, val_lo, ...]
@@ -153,10 +160,34 @@ ENGINE_PIDS = [
 ]
 
 TRANS_PIDS = [
-    # trans_temp confirmed. trans_gear and tcc_ratio respond but encoding unclear.
+    # --- Confirmed, in production collector ---
     ("trans_temp_c",       b"221E1C", 6, lambda d: round(s16(d[4], d[5]) / 16, 1),              "°C"),
+    # 221E1D confirmed 2026-06-07: starts above sump (~80°C), drops during driving (~69°C
+    # at end of 20-min city drive while sump rose to 85°C). Cooler return-line position.
+    ("trans_oil_temp2_c",  b"221E1D", 6, lambda d: round(s16(d[4], d[5]) / 16, 1),              "°C"),
+    # 0x46 = Park state code — stored as None by obd_commands.py, shown here raw for diagnostics.
     ("trans_gear",         b"221E12", 5, lambda d: d[4],                                         "raw"),
     ("tcc_ratio",          b"221E1F", 5, lambda d: round(d[4] / 255, 3),                         "ratio"),
+
+    # --- Research candidates — formula/unit not yet confirmed, needs FORScan cross-reference ---
+
+    # 221E0A and 221E11 are an INVERSELY CORRELATED PAIR (sum ≈ 820–880).
+    # Hypothesis: TCC apply pressure (1E0A) + TCC release pressure (1E11) = system line pressure.
+    # 1E0A: 121 at park/cruise, spikes to 514 during hard acceleration.
+    # 1E11: 760 at park/cruise, drops to 235 during same hard-accel moments.
+    ("tcm_1E0A_apply_kpa", b"221E0A", 6, lambda d: (d[4] * 256) + d[5],                         "kPa?"),
+    ("tcm_1E11_releas_kpa",b"221E11", 6, lambda d: (d[4] * 256) + d[5],                         "kPa?"),
+
+    # 221E1A: strongest line-pressure candidate.
+    # Park/cruise floor = 299–300; peaks at 804 during heavy accel.
+    # Heavy/idle ratio = 2.68, matches Ford 8F35 WOT/idle line pressure ratio (~2.7–2.9×).
+    # If direct kPa: 300 kPa = 43 PSI (low for idle); if ×0.25 PSI: 75 PSI (more plausible).
+    # Needs FORScan confirmation before adding to production collector.
+    ("tcm_1E1A_linepress",  b"221E1A", 6, lambda d: (d[4] * 256) + d[5],                        "raw"),
+
+    # 221E23: suspiciously stable at 100–103 across all conditions. Possible commanded
+    # base line pressure (PSI) or a regulated reference. Low diagnostic value.
+    ("tcm_1E23",            b"221E23", 5, lambda d: d[4],                                        "raw"),
 ]
 
 # Misfire accumulator monitors — confirmed responding via --scan (2026-06-06).
@@ -199,16 +230,24 @@ SCAN_PIDS = [
     b"0685",
 ]
 
+# TCM-specific candidates — probed with forced header ATSH7E1 (7E9 responds).
+# Common Ford UDS transmission pressure and control PIDs.
+TRANS_PRESSURE_CANDIDATES = [
+    b"221E01", b"221E05", b"221E11", b"221E1A", b"221E20", b"221E3B",
+]
 
-def run_scan(conn) -> None:
-    """Test every address in SCAN_PIDS and print raw bytes for any that respond."""
-    print("\nSCAN MODE — looking for responding addresses")
-    print("  " + "─" * 70)
-    print(f"  {'Address':<12} {'Raw bytes':<35} Note")
-    print("  " + "─" * 70)
+# Broad sweep of the 221Exx namespace to discover all responsive TCM addresses.
+# Covers 221E00–221E5F; add more ranges if the initial sweep misses known addresses.
+# Use without ATSH override — functional broadcast, same as confirmed trans PIDs.
+TRANS_SWEEP = [
+    bytes(f"221E{n:02X}".encode()) for n in range(0x00, 0x60)
+]
 
+
+def _scan_block(conn, candidates: list[bytes]) -> list[str]:
+    """Query each address, print one line per result, return list of confirmed hits."""
     hits = []
-    for addr in SCAN_PIDS:
+    for addr in candidates:
         cmd = OBDCommand(addr.decode(), addr.decode(), addr, 8, raw_decoder, ECU.ALL, fast=False)
         resp = conn.query(cmd, force=True)
 
@@ -234,7 +273,6 @@ def run_scan(conn) -> None:
         elif len(raw) >= svc_idx + 3 and raw[svc_idx] == 0x7F:
             nrc = raw[svc_idx + 2] if len(raw) > svc_idx + 2 else 0
             if nrc == 0x22:
-                # NRC22 = address exists, ECU conditions not met (e.g. engine not warm)
                 note = "NRC22 ← address confirmed (conditions not met)"
                 hits.append(addr_str)
             elif nrc == 0x31:
@@ -246,11 +284,67 @@ def run_scan(conn) -> None:
 
         print(f"  {addr_str:<12} {raw_hex:<35} {note}")
 
+    return hits
+
+
+def run_scan(conn) -> None:
+    """Test PCM addresses in SCAN_PIDS, then probe TCM candidates with forced 7E1 header."""
+    # --- PCM scan (default broadcast header) ---
+    print("\nSCAN MODE — PCM (default broadcast header)")
+    print("  " + "─" * 70)
+    print(f"  {'Address':<12} {'Raw bytes':<35} Note")
+    print("  " + "─" * 70)
+
+    hits = _scan_block(conn, SCAN_PIDS)
+
     print("  " + "─" * 70)
     if hits:
-        print(f"\n  Addresses that responded: {', '.join(hits)}")
+        print(f"\n  PCM addresses that responded: {', '.join(hits)}")
     else:
-        print("\n  No addresses responded.")
+        print("\n  No PCM addresses responded.")
+
+    # --- TCM scan (forced header 7E1 → TCM responds from 7E9) ---
+    print("\nSCAN MODE — TCM (forced ATSH7E1)")
+    print("  " + "─" * 70)
+    print(f"  {'Address':<12} {'Raw bytes':<35} Note")
+    print("  " + "─" * 70)
+
+    # Force request CAN ID to 7E1 (TCM physical address).
+    # OBDLink MX+ manages flow control automatically in CAN mode.
+    conn.interface.send_and_parse(b"ATSH7E1")
+
+    tcm_hits = _scan_block(conn, TRANS_PRESSURE_CANDIDATES)
+
+    # Restore functional broadcast so subsequent queries reach all ECUs.
+    conn.interface.send_and_parse(b"ATSH7DF")
+
+    print("  " + "─" * 70)
+    if tcm_hits:
+        print(f"\n  TCM addresses that responded: {', '.join(tcm_hits)}")
+    else:
+        print("\n  No TCM addresses responded.")
+
+
+def run_scan_tcm(conn) -> None:
+    """Sweep 221E00–221E5F via functional broadcast to discover all responsive TCM addresses.
+
+    Does NOT force ATSH — uses the same functional addressing as the confirmed trans PIDs
+    (221E1C, 221E12, 221E1F).  Confirmed addresses should show RESPOND; raw bytes are
+    printed so you can work out the encoding manually.
+    """
+    print("\nTCM SWEEP — 221E00–221E5F (functional broadcast)")
+    print("  " + "─" * 70)
+    print(f"  {'Address':<12} {'Raw bytes':<35} Note")
+    print("  " + "─" * 70)
+
+    hits = _scan_block(conn, TRANS_SWEEP)
+
+    print("  " + "─" * 70)
+    if hits:
+        print(f"\n  Responding addresses: {', '.join(hits)}")
+        print("  Run without --scan-tcm to decode the confirmed addresses.")
+    else:
+        print("\n  No TCM addresses in 221E00–221E5F responded.")
 
 
 def run_once(conn, log=None) -> None:
@@ -356,6 +450,11 @@ def main() -> None:
         sys.exit(1)
 
     print(f"Connected — {conn.protocol_name()}")
+
+    if SCAN_TCM:
+        run_scan_tcm(conn)
+        conn.close()
+        return
 
     if SCAN:
         run_scan(conn)

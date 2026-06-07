@@ -41,7 +41,7 @@ obd.OBD("/dev/rfcomm0", fast=False, timeout=30)
 | obd_1s | 1s | rpm, speed_kmh, throttle_pct, load_pct |
 | obd_5s | 5s | coolant_temp_c, oil_temp_c, intake_air_temp_c, maf_gs, map_kpa, baro_pressure_kpa, stft_pct, ltft_pct, o2_b1s1_v, o2_b1s2_v, timing_advance_deg, fuel_rail_kpa |
 | obd_30s | 30s | battery_v, fuel_level_pct, ambient_air_temp_c, distance_since_dtc_cleared_km |
-| ford_obd_5s | 5s | trans_temp_c, trans_gear, tcc_ratio |
+| ford_obd_5s | 5s | trans_temp_c, trans_oil_temp2_c, trans_line_pressure_kpa, trans_gear, tcc_ratio |
 | ford_obd_10s | 10s | oil_pressure_kpa, knock_retard_deg, boost_desired_psi, boost_actual_psi, cac_temp_c, wastegate_pct, vct_intake_deg, vct_exhaust_deg |
 | ford_obd_20s | 20s | misfire_acc_cyl1–4 |
 
@@ -166,15 +166,24 @@ Frame layout: `[len, 0x62, PID_H, PID_L, data_A, data_B, ...]` — data starts a
 | 220462 | boost_actual_psi | `((A*256)+B) * 0.0145` | Same scale as desired; gap = boost leak or turbo wear |
 | 2203CA | cac_temp_c | `s8(A)` (1 byte) | Charge air cooler temp; 84–88°C observed |
 | 2203E3 | wastegate_pct | `((A*256)+B) / 100` | 15–21% at light driving |
-| 220303 | vct_intake_deg | `s16(A,B) / 16` | 8.0° steady state; varies under load |
-| 220304 | vct_exhaust_deg | `(u16 - 26858) / 256` | Scale confirmed as /256. BASE=26858 derived from warm city driving (exhaust cam parked ≈0°). Confirm BASE once vs FORScan at warm idle. Observed: 0° cruise, -1° fuel-cut decel, +8° TCC lockup, +9° hard downshift |
+| 220303 | vct_intake_deg | `s16(d[6],d[7]) / 16` | 4-byte response: d[4:6]=unknown ref, d[6:8]=actual position. Confirmed 0.0° vs FORScan VCT_INT_ACT1≈0.19° at warm idle 2026-06-06 |
+| 220304 | vct_exhaust_deg | `(u16 - 29287) / 256` | BASE=29287 confirmed vs FORScan VCT_EXH_ACT1=0.00° at warm idle 2026-06-06. Negative = cam retarding from base for internal EGR |
 
 ### TCM (Transmission — header 7E1)
 | PID | Column | Formula | Notes |
 |-----|--------|---------|-------|
-| 221E1C | trans_temp_c | `s16(A,B) / 16` | 79–85°C observed; warming through session |
-| 221E12 | trans_gear | `A` (1 byte) | Values 1–6 confirmed as gear. Occasional values >8 during shifts — stored raw |
-| 221E1F | tcc_ratio | `A / 255` | 0.0 = unlocked, 1.0 = fully locked; partial values = TCC engaging |
+| 221E1C | trans_temp_c | `s16(A,B) / 16` | 79–85°C; sump temp, warms during driving |
+| 221E1D | trans_oil_temp2_c | `s16(A,B) / 16` | Cooler return-line temp. Starts ~80°C (above sump), drops to ~69°C during 20-min city drive while sump rises to 85°C. Confirmed 2026-06-07. |
+| 221E1A | trans_line_pressure_kpa | `(A*256)+B` | Range 299 (park/cruise) → 804 (hard accel). Heavy/idle ratio 2.68 matches Ford 8F35 spec (~2.7–2.9×). Unit assumed kPa — calibrate against known condition if Grafana threshold needed. |
+| 221E12 | trans_gear | `A if 1≤A≤8 else NULL` | Values 1–6 confirmed during driving. 0x46 = Park state code → stored as NULL |
+| 221E1F | tcc_ratio | `A/255 if A≠0x46 else NULL` | 0.0=unlocked, 1.0=locked. 0x46 in Park = state code → NULL |
+
+### TCM signals observed but not collected
+| PID | Range observed | Notes |
+|-----|----------------|-------|
+| 221E0A | 121 (park) → 514 (hard accel) | Inversely correlated with 221E11; suspected TCC apply/release hydraulic pair |
+| 221E11 | 760 (park) → 235 (hard accel) | Sum with 221E0A ≈ 820–880 |
+| 221E23 | 100–103 (very stable) | Low diagnostic value; likely commanded base pressure reference |
 
 ### Mode 06 Misfire Accumulators (PCM header 7E0)
 Confirmed 2026-06-06. Multi-frame response (37 bytes, 4 CAN frames). First-frame layout:

@@ -36,7 +36,7 @@ from config import config
 from logger import logger
 
 # Increment this when the schema changes — triggers migration logic.
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 6
 
 
 def get_connection(_depth: int = 0) -> sqlite3.Connection:
@@ -287,13 +287,15 @@ def _create_tables(conn: sqlite3.Connection) -> None:
         -- ford_obd_5s — Ford Mode 22 TCM: transmission temp, gear, TCC ratio.
         -- Addresses confirmed via pid_log_20260605_190444.txt.
         CREATE TABLE IF NOT EXISTS ford_obd_5s (
-            id           TEXT PRIMARY KEY,
-            trip_id      TEXT NOT NULL REFERENCES trips(id),
-            timestamp    TEXT NOT NULL,
-            trans_temp_c REAL,    -- transmission fluid °C  (Mode 22 0x221E1C)
-            trans_gear   INTEGER, -- current gear            (Mode 22 0x221E12)
-            tcc_ratio    REAL,    -- TCC clutch ratio        (Mode 22 0x221E15)
-            synced       INTEGER DEFAULT 0
+            id                TEXT PRIMARY KEY,
+            trip_id           TEXT NOT NULL REFERENCES trips(id),
+            timestamp         TEXT NOT NULL,
+            trans_temp_c             REAL,    -- transmission sump fluid °C      (Mode 22 0x221E1C)
+            trans_oil_temp2_c        REAL,    -- cooler return-line fluid °C     (Mode 22 0x221E1D)
+            trans_line_pressure_kpa  REAL,    -- line pressure kPa (assumed)     (Mode 22 0x221E1A)
+            trans_gear               INTEGER, -- current gear 1–8, NULL in Park  (Mode 22 0x221E12)
+            tcc_ratio                REAL,    -- TCC lockup ratio 0–1.0          (Mode 22 0x221E1F)
+            synced            INTEGER DEFAULT 0
         );
 
         -- ford_obd_10s — Ford Mode 22 PCM: boost, knock, VCT, oil pressure.

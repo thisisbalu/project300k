@@ -308,19 +308,20 @@ _FORD_WASTEGATE = OBDCommand(
 
 _FORD_VCT_INTAKE = OBDCommand(
     "vct_intake_deg", "Variable cam timing intake position",
-    b"220303", 6,
-    _mode22(2, lambda d: round(_s16(d[4], d[5]) / 16, 2)),
+    b"220303", 8,
+    # Response has 4 data bytes: d[4:6]=unknown reference, d[6:8]=actual cam position.
+    # Confirmed against FORScan VCT_INT_ACT1 at warm idle 2026-06-06.
+    _mode22(4, lambda d: round(_s16(d[6], d[7]) / 16, 2)),
     ECU.ALL, fast=False,
 )
 
 _FORD_VCT_EXHAUST = OBDCommand(
     "vct_exhaust_deg", "Variable cam timing exhaust position",
     b"220304", 6,
-    # Scale is /256 (not /16 like intake). BASE=26858 derived from warm city
-    # driving where exhaust cam is parked at ~0°. Confirm BASE once against
-    # FORScan at warm idle before trusting absolute values; relative trends
-    # (TCC lockup ~+8°, hard downshift ~+9°, decel ~-1°) are valid regardless.
-    _mode22(2, lambda d: round(((d[4] * 256) + d[5] - 26858) / 256, 2)),
+    # Scale is /256. BASE=29287 confirmed against FORScan VCT_EXH_ACT1=0.00°
+    # at warm idle Park 2026-06-06. Values are negative at idle (cam retards
+    # from base for internal EGR): idle≈0°, city driving≈-9°, highway≈-1.6°.
+    _mode22(2, lambda d: round(((d[4] * 256) + d[5] - 29287) / 256, 2)),
     ECU.ALL, fast=False,
 )
 
@@ -336,16 +337,39 @@ _FORD_TRANS_TEMP = OBDCommand(
 _FORD_TRANS_GEAR = OBDCommand(
     "trans_gear", "Current transmission gear",
     b"221E12", 5,
-    # Raw byte — values 1–6 confirmed as gear number. Occasional values
-    # above 8 observed during shifts; store raw for analysis.
-    _mode22(1, lambda d: d[4]),
+    # Values 1–6 confirmed as actual gear. 0x46 is a Park/Neutral state code
+    # returned by the TCM when no drive gear is engaged — store as NULL.
+    # Values 7–8 and transitional shift bytes are also stored as NULL.
+    _mode22(1, lambda d: d[4] if 1 <= d[4] <= 8 else None),
     ECU.ALL, fast=False,
 )
 
 _FORD_TCC_RATIO = OBDCommand(
     "tcc_ratio", "Torque converter clutch lockup ratio",
     b"221E1F", 5,
-    _mode22(1, lambda d: round(d[4] / 255, 3)),
+    # 0.0=open, 1.0=fully locked. 0x46 returned in Park (TCM state code,
+    # not a ratio) — store as NULL so Grafana shows a gap, not 0.275.
+    _mode22(1, lambda d: round(d[4] / 255, 3) if d[4] != 0x46 else None),
+    ECU.ALL, fast=False,
+)
+
+_FORD_TRANS_LINE_PRESSURE = OBDCommand(
+    "trans_line_pressure_kpa", "Transmission line pressure",
+    b"221E1A", 6,
+    # Range 299 (park/cruise) → 804 (hard accel). Heavy/idle ratio 2.68 matches
+    # Ford 8F35 WOT/idle line pressure ratio (~2.7–2.9×). Unit assumed kPa.
+    _mode22(2, lambda d: (d[4] * 256) + d[5]),
+    ECU.ALL, fast=False,
+)
+
+_FORD_TRANS_TEMP2 = OBDCommand(
+    "trans_oil_temp2_c", "Transmission oil temperature sensor 2",
+    b"221E1D", 6,
+    # Second TCM temperature sensor — same formula as trans_temp_c (221E1C).
+    # Drive data 2026-06-07: starts ~80°C (above sump), falls to ~69°C during
+    # 20-min city drive while sump climbs to 85°C — consistent with cooler
+    # return-line position (fluid exits trans hot, returns cooler via radiator).
+    _mode22(2, lambda d: round(_s16(d[4], d[5]) / 16, 1)),
     ECU.ALL, fast=False,
 )
 
@@ -394,9 +418,11 @@ _FORD_MISFIRE_CYL4 = OBDCommand(
 
 # TCM module — transmission data. Addresses confirmed.
 FORD_5S: list[PIDConfig] = [
-    PIDConfig(command=_FORD_TRANS_TEMP, table="ford_obd_5s", column="trans_temp_c", interval_s=5),
-    PIDConfig(command=_FORD_TRANS_GEAR, table="ford_obd_5s", column="trans_gear",   interval_s=5),
-    PIDConfig(command=_FORD_TCC_RATIO,  table="ford_obd_5s", column="tcc_ratio",    interval_s=5),
+    PIDConfig(command=_FORD_TRANS_TEMP,           table="ford_obd_5s", column="trans_temp_c",            interval_s=5),
+    PIDConfig(command=_FORD_TRANS_TEMP2,          table="ford_obd_5s", column="trans_oil_temp2_c",       interval_s=5),
+    PIDConfig(command=_FORD_TRANS_LINE_PRESSURE,  table="ford_obd_5s", column="trans_line_pressure_kpa", interval_s=5),
+    PIDConfig(command=_FORD_TRANS_GEAR,           table="ford_obd_5s", column="trans_gear",               interval_s=5),
+    PIDConfig(command=_FORD_TCC_RATIO,            table="ford_obd_5s", column="tcc_ratio",                interval_s=5),
 ]
 
 # PCM module — boost, knock, VCT, oil pressure. Addresses confirmed.
