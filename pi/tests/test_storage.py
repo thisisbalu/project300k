@@ -237,6 +237,41 @@ class TestInitSchema:
         assert count == 1
         conn.close()
 
+    def test_migration_adds_missing_columns(self, tmp_path):
+        from storage import _create_tables, _run_migrations
+        conn = _open_real_db(tmp_path / "t.db")
+        _create_tables(conn)
+        # Simulate old schema by dropping new columns
+        conn.execute("ALTER TABLE obd_5s RENAME TO obd_5s_old")
+        conn.execute("""CREATE TABLE obd_5s (
+            id TEXT PRIMARY KEY, trip_id TEXT NOT NULL, timestamp TEXT NOT NULL,
+            coolant_temp_c REAL, oil_temp_c REAL, intake_air_temp_c REAL,
+            maf_gs REAL, map_kpa REAL, baro_pressure_kpa REAL,
+            stft_pct REAL, ltft_pct REAL, o2_b1s1_v REAL, o2_b1s2_v REAL,
+            timing_advance_deg REAL, synced INTEGER DEFAULT 0
+        )""")  # missing fuel_rail_kpa
+        conn.execute("ALTER TABLE ford_obd_5s RENAME TO ford_obd_5s_old")
+        conn.execute("""CREATE TABLE ford_obd_5s (
+            id TEXT PRIMARY KEY, trip_id TEXT NOT NULL, timestamp TEXT NOT NULL,
+            trans_temp_c REAL, trans_gear INTEGER, tcc_ratio REAL,
+            synced INTEGER DEFAULT 0
+        )""")  # missing trans_oil_temp2_c, trans_line_pressure_kpa
+        conn.commit()
+        _run_migrations(conn)
+        obd5s_cols = {r[1] for r in conn.execute("PRAGMA table_info(obd_5s)")}
+        ford5s_cols = {r[1] for r in conn.execute("PRAGMA table_info(ford_obd_5s)")}
+        assert "fuel_rail_kpa" in obd5s_cols
+        assert "trans_oil_temp2_c" in ford5s_cols
+        assert "trans_line_pressure_kpa" in ford5s_cols
+        conn.close()
+
+    def test_migration_is_idempotent(self, tmp_path):
+        from storage import init_schema, _run_migrations
+        conn = _open_real_db(tmp_path / "t.db")
+        init_schema(conn)
+        _run_migrations(conn)  # second run must not raise
+        conn.close()
+
 
 # ---------------------------------------------------------------------------
 # get_trip_number()
