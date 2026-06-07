@@ -351,6 +351,30 @@ class TestMakeCallback:
         # Loop must be restarted even after a query failure
         assert mock_async.start.call_count >= 1
 
+    def test_query_sync_survives_concurrent_reconnect_nulling_conn(self):
+        """The monitor thread may null _async_conn after the connectivity
+        check. The snapshot must keep query_sync operating on the original
+        object instead of dereferencing None."""
+        c, _, _ = self._make_collector(trip_id="t")
+        mock_async = MagicMock()
+        mock_async.is_connected.return_value = True
+        mock_resp = MagicMock()
+        mock_async.query.return_value = mock_resp
+        c._async_conn = mock_async
+
+        # Simulate a reconnect nulling the attribute the instant the loop stops.
+        def null_it():
+            c._async_conn = None
+        mock_async.stop.side_effect = null_it
+
+        import obd
+        result = c.query_sync(obd.commands.GET_DTC)
+
+        # No AttributeError; scan completes against the snapshot.
+        assert result is mock_resp
+        mock_async.query.assert_called_once_with(obd.commands.GET_DTC)
+        mock_async.start.assert_called_once()
+
     def test_no_flush_when_buffer_empty_at_window_boundary(self):
         """Empty buffer at window boundary resets timer but emits no row."""
         c, mock_qw, _ = self._make_collector(trip_id="trip-1")

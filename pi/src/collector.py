@@ -171,20 +171,24 @@ class Collector:
         Returns:
             OBDResponse on success, None if not connected or on error.
         """
-        if not self.is_async_connected:
-            return None
         with self._dtc_lock:
+            # Snapshot the connection once. _monitor_connection() may null
+            # self._async_conn from another thread during a reconnect; binding
+            # it to a local here means a mid-scan reconnect cannot turn the
+            # calls below into a None dereference.
+            conn = self._async_conn
+            if conn is None or not conn.is_connected():
+                return None
             try:
-                self._async_conn.stop()
-                response = self._async_conn.query(command)
-                self._async_conn.start()
+                conn.stop()
+                response = conn.query(command)
+                conn.start()
                 return response
             except Exception as e:
                 logger.error(f"DTC query error: {e}")
                 # Best-effort restart so data collection continues.
                 try:
-                    if self._async_conn is not None:
-                        self._async_conn.start()
+                    conn.start()
                 except Exception:
                     pass
                 return None
