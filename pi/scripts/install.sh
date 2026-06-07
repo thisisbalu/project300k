@@ -54,6 +54,7 @@ echo "==> Setting up Python virtualenv"
 python3 -m venv "$PI_DIR/venv"
 "$PI_DIR/venv/bin/pip" install --upgrade pip
 "$PI_DIR/venv/bin/pip" install -r "$PI_DIR/requirements.txt"
+"$PI_DIR/venv/bin/pip" install datasette
 
 echo "==> Installing jarvis"
 chmod +x "$PI_DIR/scripts/jarvis"
@@ -64,12 +65,14 @@ sudo cp "$PI_DIR/systemd/rfcomm-connect.service" "$SYSTEMD_DIR/"
 sudo cp "$PI_DIR/systemd/obd-collector.service" "$SYSTEMD_DIR/"
 sudo cp "$PI_DIR/systemd/obd-sync.service" "$SYSTEMD_DIR/"
 sudo cp "$PI_DIR/systemd/obd-sync.timer" "$SYSTEMD_DIR/"
+sudo cp "$PI_DIR/systemd/obd-datasette.service" "$SYSTEMD_DIR/"
 
 echo "==> Enabling services"
 sudo systemctl daemon-reload
 sudo systemctl enable rfcomm-connect.service
 sudo systemctl enable obd-collector.service
 sudo systemctl enable obd-sync.timer
+sudo systemctl enable obd-datasette.service
 
 echo ""
 echo "Install complete."
