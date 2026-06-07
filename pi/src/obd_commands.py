@@ -327,6 +327,18 @@ _FORD_VCT_EXHAUST = OBDCommand(
 
 # --- TCM commands ---
 
+# The TCM returns 0x46 in data byte d[4] of several PIDs when the gearbox is in
+# Park/Neutral with no drive gear engaged. It is a state code, not a real gear
+# or ratio, so any PID that can report it stores NULL instead. Centralised here
+# so every park-sensitive decoder applies the rule identically.
+_TCM_PARK_STATE = 0x46
+
+
+def _tcm_drive_value(d, formula):
+    """Apply formula to d, or return None when the TCM reports the Park state."""
+    return None if d[4] == _TCM_PARK_STATE else formula(d)
+
+
 _FORD_TRANS_TEMP = OBDCommand(
     "trans_temp_c", "Transmission fluid temperature",
     b"221E1C", 6,
@@ -337,9 +349,9 @@ _FORD_TRANS_TEMP = OBDCommand(
 _FORD_TRANS_GEAR = OBDCommand(
     "trans_gear", "Current transmission gear",
     b"221E12", 5,
-    # Values 1–6 confirmed as actual gear. 0x46 is a Park/Neutral state code
-    # returned by the TCM when no drive gear is engaged — store as NULL.
-    # Values 7–8 and transitional shift bytes are also stored as NULL.
+    # Values 1–6 confirmed as actual gear; 7–8 and transitional shift bytes
+    # are stored as NULL. _TCM_PARK_STATE (0x46) is also outside 1–8 so it
+    # nulls naturally via the range guard.
     _mode22(1, lambda d: d[4] if 1 <= d[4] <= 8 else None),
     ECU.ALL, fast=False,
 )
@@ -347,9 +359,9 @@ _FORD_TRANS_GEAR = OBDCommand(
 _FORD_TCC_RATIO = OBDCommand(
     "tcc_ratio", "Torque converter clutch lockup ratio",
     b"221E1F", 5,
-    # 0.0=open, 1.0=fully locked. 0x46 returned in Park (TCM state code,
-    # not a ratio) — store as NULL so Grafana shows a gap, not 0.275.
-    _mode22(1, lambda d: round(d[4] / 255, 3) if d[4] != 0x46 else None),
+    # 0.0=open, 1.0=fully locked. NULL in Park (see _tcm_drive_value) so
+    # Grafana shows a gap, not a spurious 0.275.
+    _mode22(1, lambda d: _tcm_drive_value(d, lambda d: round(d[4] / 255, 3))),
     ECU.ALL, fast=False,
 )
 

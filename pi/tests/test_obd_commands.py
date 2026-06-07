@@ -197,11 +197,20 @@ def test_trans_gear_returns_gear_during_driving():
         assert decoder([msg]) == gear
 
 
+def test_tcm_drive_value_nulls_park_state():
+    """The shared Park-state helper returns None for 0x46, value otherwise."""
+    from obd_commands import _tcm_drive_value, _TCM_PARK_STATE
+    park = bytes([0x04, 0x62, 0x1E, 0x1F, _TCM_PARK_STATE])
+    drive = bytes([0x04, 0x62, 0x1E, 0x1F, 0xFF])
+    assert _tcm_drive_value(park, lambda d: round(d[4] / 255, 3)) is None
+    assert _tcm_drive_value(drive, lambda d: round(d[4] / 255, 3)) == 1.0
+
+
 def test_tcc_ratio_returns_none_for_park_state():
     """0x46 in tcc_ratio = Park state code — must store NULL, not 0.275."""
-    from obd_commands import _mode22
+    from obd_commands import _mode22, _tcm_drive_value
     import unittest.mock as mock
-    decoder = _mode22(1, lambda d: round(d[4] / 255, 3) if d[4] != 0x46 else None)
+    decoder = _mode22(1, lambda d: _tcm_drive_value(d, lambda d: round(d[4] / 255, 3)))
     frame = mock.Mock()
     frame.data = bytes([0x04, 0x62, 0x1E, 0x1F, 0x46])
     msg = mock.Mock()
@@ -210,9 +219,9 @@ def test_tcc_ratio_returns_none_for_park_state():
 
 
 def test_tcc_ratio_locked():
-    from obd_commands import _mode22
+    from obd_commands import _mode22, _tcm_drive_value
     import unittest.mock as mock
-    decoder = _mode22(1, lambda d: round(d[4] / 255, 3) if d[4] != 0x46 else None)
+    decoder = _mode22(1, lambda d: _tcm_drive_value(d, lambda d: round(d[4] / 255, 3)))
     frame = mock.Mock()
     frame.data = bytes([0x04, 0x62, 0x1E, 0x1F, 0xFF])  # fully locked
     msg = mock.Mock()

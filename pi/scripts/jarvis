@@ -185,31 +185,38 @@ case "$cmd" in
 
     ford)
         _require_db
-        _header "Ford Mode 22 — latest readings"
+        # Each Ford tier has its own cadence (5s/10s/20s) and the rows do not
+        # line up, so each is shown as its own latest-N table rather than joined.
+        _header "TCM — transmission (ford_obd_5s)"
         sqlite3 -column -header "$DB" "
             SELECT
-                SUBSTR(f5.timestamp, 12, 8)          AS time,
-                f5.trans_temp_c                      AS trans_sump_c,
-                f5.trans_oil_temp2_c                 AS trans_cooler_c,
-                f5.trans_line_pressure_kpa           AS line_pres_kpa,
-                f5.trans_gear                        AS gear,
-                ROUND(f5.tcc_ratio, 2)               AS tcc,
-                f10.oil_pressure_kpa                 AS oil_kpa,
-                ROUND(f10.knock_retard_deg, 2)       AS knock_deg,
-                ROUND(f10.boost_desired_psi, 2)      AS boost_des,
-                ROUND(f10.boost_actual_psi, 2)       AS boost_act,
-                f10.cac_temp_c                       AS cac_c,
-                ROUND(f10.wastegate_pct, 1)          AS wg_pct,
-                ROUND(f10.vct_intake_deg, 2)         AS vct_in,
-                ROUND(f10.vct_exhaust_deg, 2)        AS vct_ex
-            FROM ford_obd_5s  f5
-            LEFT JOIN ford_obd_10s f10
-                   ON f10.trip_id = f5.trip_id
-                  AND ABS(julianday(f10.timestamp) - julianday(f5.timestamp)) * 86400 < 15
-            ORDER BY f5.timestamp DESC
+                SUBSTR(timestamp, 12, 8)        AS time,
+                trans_temp_c                    AS sump_c,
+                trans_oil_temp2_c               AS cooler_c,
+                trans_line_pressure_kpa         AS line_kpa,
+                trans_gear                      AS gear,
+                ROUND(tcc_ratio, 2)             AS tcc
+            FROM ford_obd_5s
+            ORDER BY timestamp DESC
             LIMIT ${2:-10};
         "
-        _header "Misfire accumulators — latest"
+        _header "PCM — boost / knock / VCT (ford_obd_10s)"
+        sqlite3 -column -header "$DB" "
+            SELECT
+                SUBSTR(timestamp, 12, 8)        AS time,
+                oil_pressure_kpa                AS oil_kpa,
+                ROUND(knock_retard_deg, 2)      AS knock,
+                ROUND(boost_desired_psi, 2)     AS boost_des,
+                ROUND(boost_actual_psi, 2)      AS boost_act,
+                cac_temp_c                      AS cac_c,
+                ROUND(wastegate_pct, 1)         AS wg_pct,
+                ROUND(vct_intake_deg, 2)        AS vct_in,
+                ROUND(vct_exhaust_deg, 2)       AS vct_ex
+            FROM ford_obd_10s
+            ORDER BY timestamp DESC
+            LIMIT ${2:-10};
+        "
+        _header "Misfire accumulators (ford_obd_20s)"
         sqlite3 -column -header "$DB" "
             SELECT
                 SUBSTR(timestamp, 12, 8) AS time,
