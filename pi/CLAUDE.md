@@ -23,7 +23,7 @@ Collects OBD data → stores in SQLite → syncs to home server via iPhone hotsp
 /usr/bin/python3 -m pytest pi/tests/ --cov=pi/src
 ```
 Dev dependencies: `pip install -r pi/requirements-dev.txt`
-199 tests, 97% coverage. All tests run without hardware.
+253 tests, 97% coverage. All tests run without hardware.
 
 ## OBD Connection
 Always use:

@@ -90,7 +90,9 @@ collector.stop() → trip_manager.stop() → queue_writer.stop() → obd_connect
 - `obd-collector.service` — Type=notify, WatchdogSec=60, Restart=always
 - `obd-sync.service` — oneshot, runs the sync script
 - `obd-sync.timer` — fires `obd-sync.service` every 5 min after boot
-- `rfcomm-connect.service` — binds `/dev/rfcomm0` to the OBDLink MX+ MAC address at boot; uses `Wants=` (not `Requires=`) so `obd-collector.service` starts even if BT binding fails on the first attempt
+- `rfcomm-connect.service` — binds `/dev/rfcomm0` to the OBDLink MX+ MAC address at boot; uses `Wants=` (not `Requires=`) so `obd-collector.service` starts even if BT binding fails on the first attempt; includes `ExecStartPre=-/usr/bin/rfcomm release 0` to clear any stale binding from a previous session before connecting
+
+**Schema migration**: `storage._run_migrations()` is called every startup after `_create_tables()`. It adds any columns missing from existing tables via `ALTER TABLE ... ADD COLUMN` (checked via `PRAGMA table_info` first — idempotent). Increment `SCHEMA_VERSION` and add a new entry to `_run_migrations()` whenever a column is added to an existing table.
 
 ## Data Volume
 ~192,000 rows/month based on 1hr/day Mon–Sat + 4hrs Sunday.
