@@ -19,9 +19,8 @@ Row shape — one combined row per table per interval tick:
 Each callback:
     1. Receives an OBDResponse from python-obd
     2. Checks trip_id — skips if no active trip (avoids NOT NULL violation)
-    3. Skips 1s/5s PIDs when trip_manager.is_paused (RPM=0 for >30s)
-    4. Extracts the magnitude value (None if response is null/error)
-    5. If the table's interval_s has elapsed: flush the buffer as one combined
+    3. Extracts the magnitude value (None if response is null/error)
+    4. If the table's interval_s has elapsed: flush the buffer as one combined
        row via queue_writer.enqueue(), then reset the buffer and timer
     6. Accumulates this PID's value into the buffer for the current window
 
@@ -86,8 +85,8 @@ class Collector:
 
         Args:
             queue_writer:   QueueWriter for thread-safe SQLite writes.
-            trip_manager:   TripManager providing current trip_id, is_paused,
-                            and receiving RPM/voltage updates for trip detection.
+            trip_manager:   TripManager providing current trip_id and
+                            receiving RPM/voltage updates for trip detection.
             obd_connection: OBDConnection for reconnect() and reconnect_count.
         """
         self._queue_writer = queue_writer
@@ -370,9 +369,6 @@ class Collector:
 
         trip_id = self._trip_manager.current_trip_id
         if trip_id is None:
-            return
-
-        if self._trip_manager.is_paused and interval_s < 30:
             return
 
         # Extract raw magnitude — None if response has no value.

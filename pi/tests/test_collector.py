@@ -17,7 +17,6 @@ def collector(mock_async_conn):
     mock_qw = MagicMock()
     mock_tm = MagicMock()
     mock_tm.current_trip_id = None
-    mock_tm.is_paused = False
     mock_obd_conn = MagicMock()
     c = Collector(mock_qw, mock_tm, mock_obd_conn)
     return c, mock_qw, mock_tm
@@ -118,12 +117,11 @@ class TestMakeCallback:
         r.value.magnitude = magnitude
         return r
 
-    def _make_collector(self, trip_id=None, paused=False):
+    def _make_collector(self, trip_id=None):
         from collector import Collector
         mock_qw = MagicMock()
         mock_tm = MagicMock()
         mock_tm.current_trip_id = trip_id
-        mock_tm.is_paused = paused
         mock_obd = MagicMock()
         c = Collector(mock_qw, mock_tm, mock_obd)
         return c, mock_qw, mock_tm
@@ -154,18 +152,9 @@ class TestMakeCallback:
             cb(self._make_response(1500))  # must not raise
         assert "OBD callback error" in caplog.text
 
-    def test_skips_fast_pids_when_paused(self):
-        """1s and 5s PIDs must be suppressed when polling is paused."""
-        c, mock_qw, _ = self._make_collector(trip_id=str(uuid.uuid4()), paused=True)
-        pid = self._make_pid(interval_s=1)
-        self._init_table(c, "obd_1s")
-        cb = c._make_callback(pid)
-        cb(self._make_response(800))
-        mock_qw.enqueue.assert_not_called()
-
-    def test_30s_pid_not_suppressed_when_paused(self):
-        """30s tier (battery_v, fuel level) continues even when paused."""
-        c, mock_qw, _ = self._make_collector(trip_id=str(uuid.uuid4()), paused=True)
+    def test_30s_pid_flushes_at_window_boundary(self):
+        """30s tier (battery_v, fuel level) flushes one row per 30s window."""
+        c, mock_qw, _ = self._make_collector(trip_id=str(uuid.uuid4()))
         pid = self._make_pid(table="obd_30s", column="battery_v", interval_s=30)
         self._init_table(c, "obd_30s", interval_s=30, last_flush=0.0)
         cb = c._make_callback(pid)

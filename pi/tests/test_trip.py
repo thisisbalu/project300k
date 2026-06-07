@@ -291,39 +291,10 @@ class TestTripEnd:
 
 
 # ---------------------------------------------------------------------------
-# Polling pause / resume
+# RPM zero-timer
 # ---------------------------------------------------------------------------
 
-class TestPollingPause:
-    def test_polling_paused_after_30s_rpm0(self, tm):
-        with patch("trip.time.monotonic") as mock_mono:
-            mock_mono.return_value = 100.0
-            tm.on_rpm(_rpm_response(0))
-            mock_mono.return_value = 131.0
-            tm.on_rpm(_rpm_response(0))
-        assert tm._polling_paused is True
-
-    def test_polling_resumed_when_rpm_gt0(self, tm):
-        tm._polling_paused = True
-        tm.on_rpm(_rpm_response(1500))
-        assert tm._polling_paused is False
-
-    def test_pause_not_applied_twice(self, tm, caplog):
-        import logging
-        with patch("trip.time.monotonic") as mock_mono:
-            mock_mono.return_value = 100.0
-            tm.on_rpm(_rpm_response(0))
-            mock_mono.return_value = 131.0
-            with caplog.at_level(logging.INFO, logger="obd-collector"):
-                tm.on_rpm(_rpm_response(0))  # triggers pause
-            pause_count = caplog.text.count("Polling paused")
-
-            mock_mono.return_value = 135.0
-            caplog.clear()
-            with caplog.at_level(logging.INFO, logger="obd-collector"):
-                tm.on_rpm(_rpm_response(0))  # already paused, must not log again
-            assert "Polling paused" not in caplog.text
-
+class TestRpmZeroTimer:
     def test_rpm_zero_since_reset_on_rpm_gt0(self, tm):
         with patch("trip.time.monotonic", return_value=100.0):
             tm.on_rpm(_rpm_response(0))
@@ -349,11 +320,6 @@ class TestTripManagerStop:
             tm._dispatch_dtc_scan("fake-id", "trip_end")
         tm.stop()
         assert finished  # thread completed before stop() returned
-
-    def test_is_paused_property_reflects_state(self, tm):
-        assert tm.is_paused is False
-        tm._polling_paused = True
-        assert tm.is_paused is True
 
 
 class TestDispatchDtcScan:

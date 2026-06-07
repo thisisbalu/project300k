@@ -62,7 +62,7 @@ Tests run without hardware. `conftest.py` sets required env vars before any `src
 - Polling tiers: 1s / 5s / 30s (standard OBD) + ford_obd_5s / 10s / 20s (Mode 22)
 - Single `obd.Async` connection with time-filter callbacks enforcing `interval_s` per PID — python-obd 0.7.3 fires all watchers at ~1Hz regardless of registration interval
 - Trip start: voltage >13V AND RPM>0 — Trip end: RPM=0 for >30s AND voltage <12.5V
-- Polling pause: obd_1s + obd_5s suppressed when RPM=0 for >30s; obd_30s keeps running
+- No polling pause — all tiers record continuously during an active trip (idle/ESS-stop data is kept; filter on `rpm > 0` in Grafana when an average should exclude idle)
 - NULL stored for bad PID responses — never carry forward last known value
 - SQLite mirrors PostgreSQL structure exactly — same tables, same columns, same units
 - UUID per row for sync deduplication — `ON CONFLICT (id) DO NOTHING` on all inserts

@@ -54,8 +54,7 @@ time-filter (`time.monotonic()`) to skip enqueue until `interval_s` has elapsed.
 ## Trip Detection
 - Trip start: battery_v > 13.0V AND rpm > 0 (both required)
 - Trip end: rpm = 0 for >30s AND battery_v < 12.5V (both required)
-- Polling pause: obd_1s + obd_5s suppressed when rpm=0 for >30s; obd_30s keeps running
-- Pause is wired to `TripManager.is_paused` — checked in every `_make_callback()` closure
+- No polling pause — every tier records continuously while a trip is active. Idle and ESS auto-stop samples (rpm=0 with the bus alive) are kept on purpose; they're honest data and storage is effectively free. The only guard in `_handle_response` is the active-trip check (`current_trip_id is None` → skip).
 
 ## Threading Model
 ```
@@ -128,7 +127,6 @@ Log these events:
 - First PID read success
 - Trip start / trip end
 - BT reconnect (with total reconnect count)
-- Polling paused / resumed
 - Sync success (with row count), skipped (no hotspot), failed (with error)
 - SQLite write errors
 - Script restart (from systemd)

@@ -1,5 +1,5 @@
 """
-trip.py — Trip lifecycle detection and polling pause management.
+trip.py — Trip lifecycle detection.
 
 A trip is a continuous engine-on period, identified by a UUID. Trip
 boundaries are determined by two signals — RPM and battery voltage —
@@ -27,7 +27,7 @@ otherwise the trip would never end once the bus goes quiet.
 Threading:
     on_rpm() and on_voltage() are called from python-obd's background
     polling thread. All shared state (current_trip_id, _rpm_zero_since,
-    _last_voltage, _polling_paused) is protected by _lock to prevent
+    _last_voltage) is protected by _lock to prevent
     data races between concurrent callback invocations.
 
     DTC scans run on daemon threads. stop() joins them with a timeout so
@@ -55,7 +55,7 @@ from storage import get_trip_number, update_trip_end
 # Trip boundary thresholds
 VOLTAGE_ENGINE_RUNNING = 13.0  # V — alternator running above this
 VOLTAGE_ENGINE_OFF     = 12.5  # V — alternator stopped below this
-RPM_ZERO_DURATION_S    = 30    # seconds RPM must be 0 before trip ends / polling pauses
+RPM_ZERO_DURATION_S    = 30    # seconds RPM must be 0 before trip ends
 
 
 class TripManager:
@@ -75,9 +75,6 @@ class TripManager:
     Attributes:
         current_trip_id: UUID string of the active trip, or None between trips.
                          Read by Collector callbacks — protected by _lock.
-        is_paused:       True when 1s/5s polling is suppressed (RPM=0 for >30s).
-                         Read by Collector._make_callback() — no lock needed
-                         because it is a single bool written atomically.
     """
 
     def __init__(self, queue_writer, obd_connection=None) -> None:
@@ -116,34 +113,22 @@ class TripManager:
         # is the trip-end signal when the bus stops answering before voltage is
         # ever observed below VOLTAGE_ENGINE_OFF.
         self._last_voltage_mono: float | None = None
-        self._polling_paused: bool = False
 
         # Track active DTC scan threads so stop() can join them before
         # obd_connection.disconnect() closes the connection they are using.
         self._dtc_threads: list[threading.Thread] = []
         self._dtc_threads_lock = threading.Lock()
 
-    @property
-    def is_paused(self) -> bool:
-        """True when 1s/5s polling is suppressed (RPM=0 for >30s).
-
-        Read by Collector._make_callback() on the OBD callback thread.
-        Written by _pause_polling()/_resume_polling() under _lock.
-        A single bool read/write is atomic in CPython, so no separate
-        lock is required for this read-only property.
-        """
-        return self._polling_paused
-
     def on_rpm(self, response: obd.OBDResponse) -> None:
         """Handle an incoming RPM reading.
 
-        Drives the trip start/end state machine and the polling pause logic.
+        Drives the trip start/end state machine.
         All shared state mutations are protected by _lock.
 
         A null/None response is treated as "engine not running" rather than
         ignored: after key-off the ECU stops answering and returns null instead
         of a clean rpm=0, so dropping nulls would freeze the zero-duration timer
-        and the trip would never end (and polling would never pause).
+        and the trip would never end.
 
         Args:
             response: OBDResponse from python-obd (may be null on read error).
@@ -154,9 +139,6 @@ class TripManager:
         with self._lock:
             if rpm_present and rpm > 0:
                 self._rpm_zero_since = None
-
-                if self._polling_paused:
-                    self._resume_polling()
 
                 # Start trip only if no trip is currently active AND voltage
                 # confirms the alternator is running. Both checks happen inside
@@ -171,11 +153,9 @@ class TripManager:
 
                 elapsed = time.monotonic() - self._rpm_zero_since
 
+                # End the trip once RPM has been 0 for >30s and voltage also
+                # confirms the engine is off.
                 if elapsed >= RPM_ZERO_DURATION_S:
-                    if not self._polling_paused:
-                        self._pause_polling()
-
-                    # End the trip once voltage also confirms the engine is off.
                     if self.current_trip_id is not None and self._engine_off_confirmed():
                         self._end_trip()
 
@@ -377,16 +357,6 @@ class TripManager:
 
         except Exception as e:
             logger.error(f"DTC scan failed ({scan_trigger}): {e}")
-
-    def _pause_polling(self) -> None:
-        """Pause 1s and 5s polling tiers — RPM=0 for >30s."""
-        self._polling_paused = True
-        logger.info("Polling paused — RPM=0 for >30s (30s tier still active)")
-
-    def _resume_polling(self) -> None:
-        """Resume 1s and 5s polling tiers — RPM > 0."""
-        self._polling_paused = False
-        logger.info("Polling resumed — RPM > 0")
 
     def _engine_off_confirmed(self) -> bool:
         """Return True when voltage confirms the engine is off.
