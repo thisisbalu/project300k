@@ -35,7 +35,7 @@ import sqlite3
 from config import config
 from logger import logger
 
-# Increment this when the schema changes — triggers migration logic.
+# Recorded in the schema_version table on first init. Informational only.
 SCHEMA_VERSION = 6
 
 
@@ -154,7 +154,6 @@ def init_schema(conn: sqlite3.Connection) -> None:
         conn: Active SQLite connection returned by get_connection().
     """
     _create_tables(conn)
-    _run_migrations(conn)
     _create_indexes(conn)
     _record_schema_version(conn)
     logger.info(f"Schema initialised — version {SCHEMA_VERSION}")
@@ -420,38 +419,6 @@ def _create_indexes(conn: sqlite3.Connection) -> None:
     """)
     conn.commit()
     logger.info("Indexes created (or already exist)")
-
-
-def _run_migrations(conn: sqlite3.Connection) -> None:
-    """Add columns missing from existing tables due to schema evolution.
-
-    Called every startup after _create_tables. Safe and idempotent — checks
-    PRAGMA table_info before each ALTER so repeated runs are no-ops.
-    Add a new entry here whenever a column is added to an existing table.
-    """
-    _migrations = [
-        ("obd_5s",       "fuel_rail_kpa",            "REAL"),
-        ("ford_obd_5s",  "trans_oil_temp2_c",         "REAL"),
-        ("ford_obd_5s",  "trans_line_pressure_kpa",   "REAL"),
-        ("ford_obd_10s", "oil_pressure_kpa",          "REAL"),
-        ("ford_obd_10s", "knock_retard_deg",          "REAL"),
-        ("ford_obd_10s", "boost_desired_psi",         "REAL"),
-        ("ford_obd_10s", "boost_actual_psi",          "REAL"),
-        ("ford_obd_10s", "cac_temp_c",                "REAL"),
-        ("ford_obd_10s", "wastegate_pct",             "REAL"),
-        ("ford_obd_10s", "vct_intake_deg",            "REAL"),
-        ("ford_obd_10s", "vct_exhaust_deg",           "REAL"),
-        ("ford_obd_20s", "misfire_acc_cyl1",          "INTEGER"),
-        ("ford_obd_20s", "misfire_acc_cyl2",          "INTEGER"),
-        ("ford_obd_20s", "misfire_acc_cyl3",          "INTEGER"),
-        ("ford_obd_20s", "misfire_acc_cyl4",          "INTEGER"),
-    ]
-    for table, column, col_type in _migrations:
-        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
-        if column not in existing:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}")
-            conn.commit()
-            logger.info(f"Migration: added {table}.{column} ({col_type})")
 
 
 def _record_schema_version(conn: sqlite3.Connection) -> None:

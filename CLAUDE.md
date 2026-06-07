@@ -92,7 +92,7 @@ collector.stop() → trip_manager.stop() → queue_writer.stop() → obd_connect
 - `obd-sync.timer` — fires `obd-sync.service` every 5 min after boot
 - `rfcomm-connect.service` — binds `/dev/rfcomm0` to the OBDLink MX+ MAC address at boot; uses `Wants=` (not `Requires=`) so `obd-collector.service` starts even if BT binding fails on the first attempt; includes `ExecStartPre=-/usr/bin/rfcomm release 0` to clear any stale binding from a previous session before connecting
 
-**Schema migration**: `storage._run_migrations()` is called every startup after `_create_tables()`. It adds any columns missing from existing tables via `ALTER TABLE ... ADD COLUMN` (checked via `PRAGMA table_info` first — idempotent). Increment `SCHEMA_VERSION` and add a new entry to `_run_migrations()` whenever a column is added to an existing table.
+**Schema is create-only**: `storage.init_schema()` runs `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS` on every boot — no migration logic. The schema is treated as final; changing a column on an already-deployed DB requires wiping `obd.db` (the data is synced to PostgreSQL, the USB copy is a backup).
 
 ## Data Volume
 ~192,000 rows/month based on 1hr/day Mon–Sat + 4hrs Sunday.
