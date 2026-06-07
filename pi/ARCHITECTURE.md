@@ -45,13 +45,6 @@ flowchart TD
     end
 
     SY -->|"HTTPS POST · Bearer · over Tailscale"| API["Golang API<br/>home server → PostgreSQL"]
-
-    style P1 fill:#eaf2ff,stroke:#4477aa,color:#111
-    style P2 fill:#eafaef,stroke:#44aa77,color:#111
-    style USB fill:#fff4e0,stroke:#cc9944,color:#111
-    style QW fill:#ffe9e9,stroke:#cc5555,color:#111
-    style OBD fill:#f0f0f0,stroke:#888,color:#111
-    style API fill:#f0f0f0,stroke:#888,color:#111
 ```
 
 **Cross-cutting (imported almost everywhere, omitted from the flow above):**
