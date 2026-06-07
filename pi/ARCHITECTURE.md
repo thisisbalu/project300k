@@ -3,48 +3,55 @@
 How the Python OBD collector is wired together. Two independent processes share
 state only through files on the USB drive — they never talk in-memory.
 
-```mermaid
-flowchart TD
-    OBD["OBDLink MX+<br/>Mode 01 / 22 / 06"] -->|"/dev/rfcomm0 (BT serial)"| COL
-
-    subgraph P1["PROCESS 1 — obd-collector.service (systemd Type=notify, always-on)"]
-        direction TB
-        MAIN["main.py<br/>orchestrator + 30s watchdog loop<br/>[MAIN THREAD]"]
-        COL["collector.py — Collector<br/>owns the single obd.Async<br/>[async thread + obd-monitor thread]"]
-        CMD["obd_commands.py<br/>ALL_PIDS — 37 PIDs / 6 tiers"]
-        OC["obd_connection.py<br/>verify link / reconnect"]
-        TM["trip.py — TripManager<br/>start/end state machine"]
-        DTC["dtc-scan<br/>[daemon thread]<br/>GET_DTC / GET_CURRENT_DTC"]
-        QW["queue_writer.py — QueueWriter<br/>the ONLY SQLite writer<br/>[drain thread]"]
-        ST["storage.py<br/>connection · schema · trip repair"]
-    end
-
-    MAIN -->|starts + wires| COL
-    MAIN --> QW
-    MAIN --> OC
-    MAIN --> TM
-    CMD -->|PID definitions| COL
-    COL -->|rpm / voltage| TM
-    COL -->|PID values buffered| QW
-    COL -.->|on drop| OC
-    OC -.->|reconnect| COL
-    TM -->|spawns at trip boundary| DTC
-    DTC -->|query_sync stops async| COL
-    DTC -->|dtc_events| QW
-    QW --> ST
-
-    ST --> USB[("USB drive /mnt/usb (ext4, WAL)<br/>obd.db · obd.log · counter files")]
-
-    USB -->|"read synced=0 · counters · log tail"| SY
-
-    subgraph P2["PROCESS 2 — obd-sync.service (oneshot, every 5 min via timer)"]
-        direction TB
-        SY["sync.py — batch uploader<br/>network check → snapshot → POST"]
-        HL["health.py<br/>Pi vitals snapshot"]
-        SY -->|collect| HL
-    end
-
-    SY -->|"HTTPS POST · Bearer · over Tailscale"| API["Golang API<br/>home server → PostgreSQL"]
+```
+                   ┌──────────────────────────────────────────────────┐
+                   │       OBDLink MX+   ·   Mode 01 / 22 / 06        │
+                   └──────────────────────────────────────────────────┘
+                                             ▼
+            ┌────────────────────────────────────────────────────────────────┐
+            │             main.py — orchestrator  [MAIN THREAD]              │
+            │              boot · wire deps · 30s watchdog loop              │
+            └────────────────────────────────────────────────────────────────┘
+                                             ▼ starts
+         ┌──────────────────────────────────────────────────────────────────────┐
+         │              collector.py — Collector  (owns obd.Async)              │
+         │               [async thread]  +  [obd-monitor thread]                │
+         │    watches obd_commands.ALL_PIDS  ·  reconnect via obd_connection    │
+         └───────────────────────────────────┬──────────────────────────────────┘
+                      ┌──────────────────────┴────────────────────┐
+                rpm/volt                                          │ PID values
+                      ▼                                           ▼
+      ┌──────────────────────────────┐          ┌──────────────────────────────────┐
+      │    trip.py — TripManager     │dtc_events│  queue_writer.py — QueueWriter   │
+      │   start/end state machine    │──────────►      the ONLY SQLite writer      │
+      │   spawns dtc-scan [thread]   │          │   [drain thread] batch+commit    │
+      └──────────────────────────────┘          └──────────────────────────────────┘
+                      └──────────────────────┬────────────────────┘
+                                             ▼
+            ┌────────────────────────────────────────────────────────────────┐
+            │                  storage.py — SQLite gateway                   │
+            │              WAL · integrity_check · trip repair               │
+            └────────────────────────────────────────────────────────────────┘
+                                             │
+                                             │
+                                             ▼
+            ┌────────────────────────────────────────────────────────────────┐
+            │                USB drive /mnt/usb  (ext4, WAL)                 │
+            │                obd.db · obd.log · counter files                │
+            └────────────────────────────────────────────────────────────────┘
+                                             │
+                                             │ synced=0
+                                             ▼
+            ┌────────────────────────────────────────────────────────────────┐
+            │          sync.py — batch uploader  [separate process]          │
+            │             net check · health.py snapshot · POST              │
+            └────────────────────────────────────────────────────────────────┘
+                                             │
+                                             │ Tailscale
+                                             ▼
+                   ┌──────────────────────────────────────────────────┐
+                   │     Golang API  →  PostgreSQL (home server)      │
+                   └──────────────────────────────────────────────────┘
 ```
 
 **Cross-cutting (imported almost everywhere, omitted from the flow above):**
