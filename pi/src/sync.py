@@ -23,14 +23,27 @@ Sync flow:
 
     4. Summary log — total rows synced across all tables.
 
-Priority order:
-    obd_1s first — highest frequency, most valuable for trend analysis.
-    trips last — trip metadata references rows that should be synced first.
+Sync order:
+    trips FIRST — it is the parent table; every data row carries
+    trip_id REFERENCES trips(id). Children must reach the server after their
+    parent trip exists or the server's foreign key rejects them. Among the
+    children, obd_1s comes first (highest frequency, most valuable for trends).
 
-Idempotency:
-    Each row has a UUID primary key. The server uses ON CONFLICT (id) DO
-    NOTHING so retrying a partially-synced batch is safe — already-synced
-    rows are silently ignored by the server.
+Idempotency / upsert contract (server side):
+    Each row has a UUID primary key. All tables EXCEPT trips are insert-once
+    and the server must use:
+        ON CONFLICT (id) DO NOTHING
+    so retrying a partially-synced batch silently ignores already-stored rows.
+
+    trips is the one MUTABLE row: it is first synced open (end_time NULL) so
+    children have a parent to reference, then re-synced closed after
+    update_trip_end() resets synced=0 with the final end_time/duration_s.
+    The server MUST therefore upsert trips with:
+        ON CONFLICT (id) DO UPDATE
+            SET end_time = EXCLUDED.end_time,
+                duration_s = EXCLUDED.duration_s
+    A DO NOTHING on trips would swallow the close and leave every multi-run
+    trip permanently open on the server.
 """
 
 import subprocess
@@ -53,7 +66,10 @@ _MAX_BATCHES_PER_TABLE = 1000
 # Retry attempts for the post-POST UPDATE synced=1 on OperationalError.
 _SYNCED_UPDATE_RETRIES = 5
 
+# trips first — parent of every trip_id FK. Children follow, obd_1s highest
+# priority among them. See the module docstring's "Sync order" note.
 SYNC_TABLE_ORDER = [
+    "trips",
     "obd_1s",
     "obd_5s",
     "obd_30s",
@@ -62,7 +78,6 @@ SYNC_TABLE_ORDER = [
     "ford_obd_20s",
     "dtc_events",
     "pi_health_log",
-    "trips",
 ]
 
 
