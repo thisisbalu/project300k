@@ -5,7 +5,7 @@ After=network.target
 [Service]
 Type=simple
 User=balu
-ExecStart=/home/balu/project300k/pi/venv/bin/datasette /mnt/usb/data/obd.db --host 0.0.0.0 --port 8001 --immutable /mnt/usb/data/obd.db
+ExecStart=/home/balu/project300k/pi/venv/bin/datasette --host 0.0.0.0 --port 8001 --immutable /mnt/usb/data/obd.db
 Restart=on-failure
 RestartSec=10
 
