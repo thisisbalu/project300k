@@ -242,21 +242,29 @@ class TestInitSchema:
 # ---------------------------------------------------------------------------
 
 class TestGetTripNumber:
+    @staticmethod
+    def _writer(conn):
+        """Minimal QueueWriter stand-in exposing direct_query over a real conn."""
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            direct_query=lambda sql, params=(): conn.execute(sql, params).fetchone()
+        )
+
     def test_returns_1_when_no_trips(self, db_conn):
         from storage import get_trip_number
-        assert get_trip_number(db_conn) == 1
+        assert get_trip_number(self._writer(db_conn)) == 1
 
     def test_returns_n_plus_1_when_trips_exist(self, db_conn, trip_row):
         from storage import get_trip_number
-        assert get_trip_number(db_conn) == 2
+        assert get_trip_number(self._writer(db_conn)) == 2
 
     def test_handles_sqlite_error_returns_0(self, caplog):
         import logging
         from storage import get_trip_number
-        bad_conn = MagicMock()
-        bad_conn.execute.side_effect = sqlite3.Error("disk full")
+        bad_writer = MagicMock()
+        bad_writer.direct_query.side_effect = sqlite3.Error("disk full")
         with caplog.at_level(logging.WARNING, logger="obd-collector"):
-            result = get_trip_number(bad_conn)
+            result = get_trip_number(bad_writer)
         assert result == 0
         assert "Could not get trip number" in caplog.text
 

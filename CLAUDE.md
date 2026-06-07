@@ -75,7 +75,7 @@ Tests run without hardware. `conftest.py` sets required env vars before any `src
 
 **OBD connection must use `fast=False`**: `obd.OBD("/dev/rfcomm0", fast=False, timeout=30)` — omitting it drops the connection on the Pi Bluetooth stack. `obd.Async` must be instantiated with a port string directly, not wrapped around an existing `obd.OBD` object.
 
-**All SQLite writes must go through `QueueWriter`**: Use `enqueue()` for INSERT paths and `direct_execute()` for UPDATE paths. Never call `conn.execute()` directly from outside `QueueWriter` — `_db_lock` will not protect it.
+**All SQLite access must go through `QueueWriter`**: Use `enqueue()` for INSERT paths, `direct_execute()` for UPDATE/DELETE, and `direct_query()` for reads that run on the OBD callback thread (e.g. `get_trip_number`). Never call `conn.execute()` directly from outside `QueueWriter` — `_db_lock` will not protect it. INSERTs use `ON CONFLICT(id) DO NOTHING` so a re-enqueued row is an idempotent no-op.
 
 **DTC scans must stop the async loop first**: `collector.query_sync()` stops `obd.Async`, issues the synchronous `GET_DTC` query, then restarts the loop. Without this, the async polling thread consumes the DTC response bytes on `/dev/rfcomm0` and the synchronous `query()` call times out. A `_dtc_lock` serialises concurrent DTC scans (e.g. trip-start and trip-end overlapping).
 

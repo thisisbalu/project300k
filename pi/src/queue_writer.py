@@ -155,6 +155,24 @@ class QueueWriter:
             self._conn.execute(sql, params)
             self._conn.commit()
 
+    def direct_query(self, sql: str, params: tuple = ()) -> Any:
+        """Run a read query under the db lock and return the first row.
+
+        Used by callers on the OBD callback thread (e.g. get_trip_number) that
+        must read the shared connection without racing _flush() on the writer
+        thread. Acquiring _db_lock serialises the read against in-flight INSERT
+        batches — a bare conn.execute() from another thread would not be safe.
+
+        Args:
+            sql:    Parameterised SELECT with ? placeholders.
+            params: Tuple of values to bind.
+
+        Returns:
+            The first result row (tuple), or None if the query returned nothing.
+        """
+        with self._db_lock:
+            return self._conn.execute(sql, params).fetchone()
+
     def _drain(self) -> None:
         """Drain the queue and write rows to SQLite in batches.
 
@@ -223,5 +241,11 @@ class QueueWriter:
         """
         columns      = ", ".join(row.keys())
         placeholders = ", ".join(f":{k}" for k in row.keys())
-        sql = f"INSERT INTO {table} ({columns}) VALUES ({placeholders})"
+        # ON CONFLICT(id) DO NOTHING — a re-enqueued row (same UUID) becomes an
+        # idempotent no-op rather than an IntegrityError, matching the server's
+        # dedup contract. Every table has id TEXT PRIMARY KEY.
+        sql = (
+            f"INSERT INTO {table} ({columns}) VALUES ({placeholders}) "
+            f"ON CONFLICT(id) DO NOTHING"
+        )
         self._conn.execute(sql, row)

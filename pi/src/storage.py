@@ -159,23 +159,23 @@ def init_schema(conn: sqlite3.Connection) -> None:
     logger.info(f"Schema initialised — version {SCHEMA_VERSION}")
 
 
-def get_trip_number(conn: sqlite3.Connection) -> int:
+def get_trip_number(queue_writer) -> int:
     """Return the next sequential trip number.
 
     Counts existing trips and returns count + 1. Called at trip start
-    to populate the human-friendly trip_number column.
-
-    This is safe because trips are only created one at a time (TripManager
-    holds _lock during _start_trip), so there is no concurrent-insert race.
+    (on the OBD callback thread) to populate the human-friendly trip_number
+    column. Reads through queue_writer.direct_query() so the SELECT acquires
+    _db_lock and does not race the writer thread's INSERT batch on the same
+    connection — a bare conn.execute() from this thread would not be safe.
 
     Args:
-        conn: Active SQLite connection.
+        queue_writer: QueueWriter — provides direct_query() and the lock.
 
     Returns:
-        Next trip number (1-based).
+        Next trip number (1-based), or 0 if the count could not be read.
     """
     try:
-        row = conn.execute("SELECT COUNT(*) FROM trips").fetchone()
+        row = queue_writer.direct_query("SELECT COUNT(*) FROM trips")
         return (row[0] or 0) + 1
     except sqlite3.Error as e:
         logger.warning(f"Could not get trip number: {e} — defaulting to 0")

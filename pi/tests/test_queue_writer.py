@@ -269,3 +269,38 @@ def test_conn_attribute_exposed(db_conn):
     from queue_writer import QueueWriter
     w = QueueWriter(db_conn)
     assert w.conn is db_conn
+
+
+# ---------------------------------------------------------------------------
+# direct_query — locked read for callers on the OBD thread
+# ---------------------------------------------------------------------------
+
+def test_direct_query_returns_first_row(db_conn):
+    from queue_writer import QueueWriter
+    w = QueueWriter(db_conn)
+    row = w.direct_query("SELECT COUNT(*) FROM trips")
+    assert row[0] == 0
+
+
+# ---------------------------------------------------------------------------
+# ON CONFLICT(id) DO NOTHING — duplicate-id insert is an idempotent no-op
+# ---------------------------------------------------------------------------
+
+def test_duplicate_id_insert_is_noop(db_conn):
+    from queue_writer import QueueWriter
+    w = QueueWriter(db_conn)
+    row = {
+        "id": "fixed-id",
+        "timestamp": "2026-01-01T00:00:00+00:00",
+        "cpu_temp_c": 50.0,
+        "synced": 0,
+    }
+    w._insert("pi_health_log", row)
+    # Same id, different value — must not raise and must not overwrite.
+    w._insert("pi_health_log", {**row, "cpu_temp_c": 99.0})
+    db_conn.commit()
+    rows = db_conn.execute(
+        "SELECT cpu_temp_c FROM pi_health_log WHERE id = 'fixed-id'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == 50.0  # first write kept, second silently ignored

@@ -76,9 +76,10 @@ obd-monitor thread (Collector)
 ```
 
 **SQLite thread safety rule**: all `conn.execute()` + `conn.commit()` must go through
-either `QueueWriter.enqueue()` (INSERT path) or `QueueWriter.direct_execute()` (UPDATE
-path). Never call `conn.execute()` directly from outside QueueWriter — `_db_lock` will
-not protect it.
+`QueueWriter.enqueue()` (INSERT path), `QueueWriter.direct_execute()` (UPDATE/DELETE),
+or `QueueWriter.direct_query()` (locked read, e.g. `get_trip_number` on the callback
+thread). Never call `conn.execute()` directly from outside QueueWriter — `_db_lock`
+will not protect it. INSERTs carry `ON CONFLICT(id) DO NOTHING` (idempotent re-enqueue).
 
 ## SQLite Schema Principles
 - UUID primary keys (TEXT in SQLite)

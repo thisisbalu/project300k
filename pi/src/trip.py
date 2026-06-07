@@ -215,7 +215,7 @@ class TripManager:
         # is still pending in the QueueWriter batch, the count may be one low,
         # producing a non-sequential trip_number. This is cosmetic only — the
         # UUID is the authoritative trip identifier.
-        trip_number = get_trip_number(self._queue_writer.conn)
+        trip_number = get_trip_number(self._queue_writer)
         row = {
             "id": self.current_trip_id,
             "trip_number": trip_number,
