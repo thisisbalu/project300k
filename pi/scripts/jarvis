@@ -117,17 +117,23 @@ case "$cmd" in
                         ELSE '0%'
                    END AS unsynced_pct
             FROM (
-                SELECT 'obd_1s'       AS table_name, COUNT(*) AS total, SUM(synced=0) AS unsynced FROM obd_1s
+                SELECT 'obd_1s'         AS table_name, COUNT(*) AS total, SUM(synced=0) AS unsynced FROM obd_1s
                 UNION ALL
-                SELECT 'obd_5s',       COUNT(*), SUM(synced=0) FROM obd_5s
+                SELECT 'obd_5s',         COUNT(*), SUM(synced=0) FROM obd_5s
                 UNION ALL
-                SELECT 'obd_30s',      COUNT(*), SUM(synced=0) FROM obd_30s
+                SELECT 'obd_30s',        COUNT(*), SUM(synced=0) FROM obd_30s
                 UNION ALL
-                SELECT 'trips',        COUNT(*), SUM(synced=0) FROM trips
+                SELECT 'ford_obd_5s',    COUNT(*), SUM(synced=0) FROM ford_obd_5s
                 UNION ALL
-                SELECT 'dtc_events',   COUNT(*), SUM(synced=0) FROM dtc_events
+                SELECT 'ford_obd_10s',   COUNT(*), SUM(synced=0) FROM ford_obd_10s
                 UNION ALL
-                SELECT 'pi_health_log',COUNT(*), SUM(synced=0) FROM pi_health_log
+                SELECT 'ford_obd_20s',   COUNT(*), SUM(synced=0) FROM ford_obd_20s
+                UNION ALL
+                SELECT 'trips',          COUNT(*), SUM(synced=0) FROM trips
+                UNION ALL
+                SELECT 'dtc_events',     COUNT(*), SUM(synced=0) FROM dtc_events
+                UNION ALL
+                SELECT 'pi_health_log',  COUNT(*), SUM(synced=0) FROM pi_health_log
             );
         "
         ;;
@@ -175,6 +181,46 @@ case "$cmd" in
         else
             echo "$result"
         fi
+        ;;
+
+    ford)
+        _require_db
+        _header "Ford Mode 22 — latest readings"
+        sqlite3 -column -header "$DB" "
+            SELECT
+                SUBSTR(f5.timestamp, 12, 8)          AS time,
+                f5.trans_temp_c                      AS trans_sump_c,
+                f5.trans_oil_temp2_c                 AS trans_cooler_c,
+                f5.trans_line_pressure_kpa           AS line_pres_kpa,
+                f5.trans_gear                        AS gear,
+                ROUND(f5.tcc_ratio, 2)               AS tcc,
+                f10.oil_pressure_kpa                 AS oil_kpa,
+                ROUND(f10.knock_retard_deg, 2)       AS knock_deg,
+                ROUND(f10.boost_desired_psi, 2)      AS boost_des,
+                ROUND(f10.boost_actual_psi, 2)       AS boost_act,
+                f10.cac_temp_c                       AS cac_c,
+                ROUND(f10.wastegate_pct, 1)          AS wg_pct,
+                ROUND(f10.vct_intake_deg, 2)         AS vct_in,
+                ROUND(f10.vct_exhaust_deg, 2)        AS vct_ex
+            FROM ford_obd_5s  f5
+            LEFT JOIN ford_obd_10s f10
+                   ON f10.trip_id = f5.trip_id
+                  AND ABS(julianday(f10.timestamp) - julianday(f5.timestamp)) * 86400 < 15
+            ORDER BY f5.timestamp DESC
+            LIMIT ${2:-10};
+        "
+        _header "Misfire accumulators — latest"
+        sqlite3 -column -header "$DB" "
+            SELECT
+                SUBSTR(timestamp, 12, 8) AS time,
+                misfire_acc_cyl1         AS cyl1,
+                misfire_acc_cyl2         AS cyl2,
+                misfire_acc_cyl3         AS cyl3,
+                misfire_acc_cyl4         AS cyl4
+            FROM ford_obd_20s
+            ORDER BY timestamp DESC
+            LIMIT ${2:-5};
+        "
         ;;
 
     # ── System health ────────────────────────────────────────────────────────
@@ -255,6 +301,7 @@ case "$cmd" in
         echo "  jarvis rows              Row counts + unsynced per table"
         echo "  jarvis trips [n]         Last n trips (default 10)"
         echo "  jarvis dtc               Recent DTC fault codes"
+        echo "  jarvis ford [n]          Latest Ford Mode 22 readings (default 10)"
         echo ""
         echo -e "${BOLD}System${RESET}"
         echo "  jarvis health            CPU temp, memory, disk, uptime"
