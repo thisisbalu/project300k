@@ -48,6 +48,12 @@ from logger import logger
 COMMIT_BATCH_SIZE  = 30   # rows — at 15 PIDs/s this is ~2s of data per commit
 COMMIT_INTERVAL_S  = 2.0  # seconds — maximum time between commits
 
+# Consecutive fully-failed flushes before declaring the write path dead.
+# At ~1 flush / COMMIT_INTERVAL_S this is ~10s of sustained write failure —
+# well inside the 60s systemd watchdog window, leaving time for main to exit
+# and systemd to restart a clean process (which re-runs get_connection()).
+MAX_CONSECUTIVE_FLUSH_FAILURES = 5
+
 # Reject writes to tables not in this set to catch routing bugs early.
 ALLOWED_TABLES = {
     "obd_1s", "obd_5s", "obd_30s",
@@ -87,6 +93,10 @@ class QueueWriter:
         # Serialises all conn.execute() + conn.commit() calls regardless of thread.
         self._db_lock = threading.Lock()
         self._stop_event = threading.Event()
+        # Count of consecutive flushes where the DB itself was unwritable.
+        # Mutated only by the writer thread in _flush(); read by the main
+        # thread via write_failing. Int read/write is atomic under the GIL.
+        self._consecutive_failures = 0
         self._thread = threading.Thread(
             target=self._drain, daemon=True, name="queue-writer"
         )
@@ -118,6 +128,18 @@ class QueueWriter:
         pinging the systemd watchdog as a zombie.
         """
         return self._thread.is_alive()
+
+    @property
+    def write_failing(self) -> bool:
+        """True when recent flushes have all failed — the DB is likely unwritable.
+
+        Read by the main watchdog loop. If the USB drive unmounts mid-session,
+        every INSERT and commit throws but the drain thread stays alive and keeps
+        pinging healthy while silently discarding rows. Surfacing this lets main
+        exit so systemd restarts a clean process, which re-runs get_connection()
+        and re-checks the mount/integrity.
+        """
+        return self._consecutive_failures >= MAX_CONSECUTIVE_FLUSH_FAILURES
 
     def enqueue(self, table: str, row: dict[str, Any]) -> None:
         """Put a row onto the write queue.
@@ -216,17 +238,31 @@ class QueueWriter:
             pending: List of (table, row) tuples to write.
         """
         with self._db_lock:
+            row_errors = 0
             for table, row in pending:
                 try:
                     self._insert(table, row)
                 except Exception as e:
                     # Log and skip bad rows — one bad row must not prevent
                     # the rest of the batch from being committed.
+                    row_errors += 1
                     logger.error(f"SQLite write error on '{table}': {e} — row discarded")
             try:
                 self._conn.commit()
+                commit_ok = True
             except Exception as e:
+                commit_ok = False
                 logger.error(f"SQLite commit failed: {e}")
+
+        # A flush counts as failed only when the DB itself is unwritable — the
+        # commit threw, or every row in a non-empty batch threw. A single bad
+        # row among good ones still commits and resets the counter, so transient
+        # row errors never trigger a restart; only sustained failure (e.g. USB
+        # unmounted) drives _consecutive_failures up to the write_failing limit.
+        if not commit_ok or (pending and row_errors == len(pending)):
+            self._consecutive_failures += 1
+        else:
+            self._consecutive_failures = 0
 
     def _insert(self, table: str, row: dict[str, Any]) -> None:
         """Build and execute a parameterised INSERT for one row.

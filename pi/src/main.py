@@ -10,7 +10,7 @@ Boot sequence:
     2. Initialise logger (falls back to stderr if USB drive not mounted)
     3. Check DS3231 RTC — log WARNING if battery dead or chip not found
     4. Increment persistent restart counter on USB drive
-    5. Open SQLite connection and initialise schema
+    5. Open SQLite connection, initialise schema, repair orphaned trips
     6. Start QueueWriter (background thread)
     7. Connect to OBDLink MX+ (retries every 15s until success)
     8. Start TripManager and Collector
@@ -33,7 +33,7 @@ from config import config
 from logger import init_file_logging, logger
 from obd_connection import OBDConnection
 from queue_writer import QueueWriter
-from storage import get_connection, init_schema
+from storage import get_connection, init_schema, repair_orphaned_trips
 from trip import TripManager
 
 
@@ -144,6 +144,10 @@ def main() -> None:
 
     conn = get_connection()
     init_schema(conn)
+    # Close any trip left open by a power cut on the previous run. Runs before
+    # QueueWriter and the collector threads start, so conn is single-threaded
+    # here and no live trip exists to be affected.
+    repair_orphaned_trips(conn)
 
     queue_writer = QueueWriter(conn)
     queue_writer.start()
@@ -185,6 +189,13 @@ def main() -> None:
             # pinging the watchdog as a zombie that silently collects nothing.
             if not queue_writer.is_alive:
                 logger.error("Queue-writer thread dead — exiting for systemd restart")
+                break
+            if queue_writer.write_failing:
+                # Drain thread is alive but every flush is failing — the DB is
+                # unwritable (USB drive likely unmounted). Exit so systemd
+                # restarts a clean process, which re-runs get_connection() and
+                # re-checks the mount, rather than silently discarding all rows.
+                logger.error("SQLite writes persistently failing (USB unmounted?) — exiting for systemd restart")
                 break
             if not collector.is_monitor_alive():
                 logger.error("OBD monitor thread dead — exiting for systemd restart")

@@ -210,6 +210,72 @@ class TestFlush:
 
 
 # ---------------------------------------------------------------------------
+# write_failing — surfaces a persistently unwritable DB (e.g. USB unmounted)
+# ---------------------------------------------------------------------------
+
+class TestWriteFailing:
+    def test_false_initially(self, db_conn):
+        from queue_writer import QueueWriter
+        assert QueueWriter(db_conn).write_failing is False
+
+    def test_false_below_threshold(self):
+        from queue_writer import QueueWriter, MAX_CONSECUTIVE_FLUSH_FAILURES
+        mock_conn = MagicMock()
+        mock_conn.commit.side_effect = Exception("disk I/O error")
+        w = QueueWriter(mock_conn)
+        for _ in range(MAX_CONSECUTIVE_FLUSH_FAILURES - 1):
+            w._flush([("obd_1s", {"id": "x"})])
+        assert w.write_failing is False
+
+    def test_true_after_consecutive_commit_failures(self):
+        from queue_writer import QueueWriter, MAX_CONSECUTIVE_FLUSH_FAILURES
+        mock_conn = MagicMock()
+        mock_conn.commit.side_effect = Exception("disk I/O error")
+        w = QueueWriter(mock_conn)
+        for _ in range(MAX_CONSECUTIVE_FLUSH_FAILURES):
+            w._flush([("obd_1s", {"id": "x"})])
+        assert w.write_failing is True
+
+    def test_all_rows_failing_counts_even_when_commit_ok(self):
+        # USB gone: every INSERT throws but commit() (no rows) succeeds.
+        from queue_writer import QueueWriter
+        mock_conn = MagicMock()
+        mock_conn.execute.side_effect = Exception("disk gone")
+        w = QueueWriter(mock_conn)
+        w._flush([("obd_1s", {"id": "a"}), ("obd_1s", {"id": "b"})])
+        assert w._consecutive_failures == 1
+
+    def test_successful_flush_resets_counter(self):
+        from queue_writer import QueueWriter, MAX_CONSECUTIVE_FLUSH_FAILURES
+        mock_conn = MagicMock()
+        mock_conn.commit.side_effect = Exception("disk I/O error")
+        w = QueueWriter(mock_conn)
+        for _ in range(MAX_CONSECUTIVE_FLUSH_FAILURES - 1):
+            w._flush([("obd_1s", {"id": "x"})])
+        # DB recovers — one clean flush clears the streak.
+        mock_conn.commit.side_effect = None
+        w._flush([("obd_1s", {"id": "x"})])
+        assert w._consecutive_failures == 0
+        assert w.write_failing is False
+
+    def test_partial_failure_does_not_count(self, db_conn, trip_row):
+        # One bad row among good ones commits fine — not a DB-level failure.
+        import uuid
+        from queue_writer import QueueWriter
+        w = QueueWriter(db_conn)
+        good = {
+            "id": str(uuid.uuid4()),
+            "trip_id": trip_row,
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "rpm": 1000,
+            "synced": 0,
+        }
+        bad = {"id": str(uuid.uuid4()), "nonexistent_col": "x"}
+        w._flush([("obd_1s", bad), ("obd_1s", good)])
+        assert w._consecutive_failures == 0
+
+
+# ---------------------------------------------------------------------------
 # _insert() — builds correct parameterised SQL
 # ---------------------------------------------------------------------------
 

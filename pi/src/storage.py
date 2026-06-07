@@ -38,6 +38,27 @@ from logger import logger
 # Recorded in the schema_version table on first init. Informational only.
 SCHEMA_VERSION = 6
 
+# OBD reading tables — every row carries trip_id + timestamp. Used by
+# repair_orphaned_trips() to find a dead trip's last recorded activity.
+_READING_TABLES = (
+    "obd_1s", "obd_5s", "obd_30s",
+    "ford_obd_5s", "ford_obd_10s", "ford_obd_20s",
+)
+
+# Shared trip-end UPDATE — sets end_time, derives duration_s from start_time,
+# and marks the row unsynced. Used by both update_trip_end() (normal trip end,
+# via QueueWriter) and repair_orphaned_trips() (boot recovery, direct on conn).
+# Bind order: (end_time, end_time, trip_id).
+_TRIP_END_SQL = """
+    UPDATE trips
+       SET end_time = ?,
+           duration_s = CAST(
+               (julianday(?) - julianday(start_time)) * 86400 AS INTEGER
+           ),
+           synced = 0
+     WHERE id = ?
+"""
+
 
 def get_connection(_depth: int = 0) -> sqlite3.Connection:
     """Open and configure the SQLite connection.
@@ -196,19 +217,75 @@ def update_trip_end(queue_writer, trip_id: str, end_time: str) -> None:
         end_time:     ISO8601 UTC end timestamp.
     """
     try:
-        queue_writer.direct_execute(
-            """UPDATE trips
-               SET end_time = ?,
-                   duration_s = CAST(
-                       (julianday(?) - julianday(start_time)) * 86400 AS INTEGER
-                   ),
-                   synced = 0
-               WHERE id = ?""",
-            (end_time, end_time, trip_id),
-        )
+        queue_writer.direct_execute(_TRIP_END_SQL, (end_time, end_time, trip_id))
         logger.info(f"Trip end written: {trip_id}")
     except Exception as e:
         logger.error(f"Failed to write trip end for {trip_id}: {e}")
+
+
+def repair_orphaned_trips(conn: sqlite3.Connection) -> int:
+    """Close trips left open by an abrupt power cut.
+
+    TripManager._end_trip() is the only writer of end_time/duration_s, and it
+    only fires after the 30s RPM=0 timer elapses. An immediate power cut at
+    engine-off (USB power dies the moment the key turns off) kills the Pi before
+    that timer completes, leaving end_time NULL forever. On the next boot this
+    finds every trip with end_time IS NULL and closes it using the timestamp of
+    that trip's last recorded reading across all OBD tables.
+
+    A trip with no readings at all (started, then power cut before any row was
+    written) is closed at its own start_time, giving duration 0.
+
+    Must be called after init_schema() and before QueueWriter or the collector
+    threads start — it runs single-threaded on the main thread at boot, so it
+    writes through conn directly rather than QueueWriter. Any trip still open at
+    boot is necessarily from a previous process: the current process has not yet
+    started a trip, so there is no risk of closing a live one.
+
+    Args:
+        conn: Active SQLite connection returned by get_connection().
+
+    Returns:
+        Number of trips repaired.
+    """
+    open_trips = conn.execute(
+        "SELECT id, start_time FROM trips WHERE end_time IS NULL"
+    ).fetchall()
+    if not open_trips:
+        return 0
+
+    repaired = 0
+    for trip in open_trips:
+        trip_id = trip["id"]
+        start_time = trip["start_time"]
+
+        # Latest reading timestamp for this trip across all OBD tables. ISO8601
+        # UTC strings are same-format and same-zone, so MAX() orders correctly
+        # lexicographically and cross-table comparison with > is valid.
+        last_ts = None
+        for table in _READING_TABLES:
+            row = conn.execute(
+                f"SELECT MAX(timestamp) FROM {table} WHERE trip_id = ?",
+                (trip_id,),
+            ).fetchone()
+            ts = row[0]
+            if ts is not None and (last_ts is None or ts > last_ts):
+                last_ts = ts
+
+        # No readings → power cut before any row was written. Fall back to
+        # start_time so duration is 0 rather than NULL.
+        end_time = last_ts if last_ts is not None else start_time
+
+        conn.execute(_TRIP_END_SQL, (end_time, end_time, trip_id))
+        repaired += 1
+        logger.warning(
+            f"Repaired orphaned trip {trip_id} — end_time set to {end_time} "
+            f"(no clean trip-end recorded; power cut suspected)"
+        )
+
+    conn.commit()
+    logger.info(f"Boot trip repair complete — {repaired} orphaned trip(s) closed")
+    return repaired
 
 
 def _create_tables(conn: sqlite3.Connection) -> None:

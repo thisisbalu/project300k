@@ -231,6 +231,65 @@ case "$cmd" in
         "
         ;;
 
+    validate)
+        _require_db
+        # One-shot sanity pass over the data pipeline. Surfaces "collector alive
+        # but not writing" and "sync stuck" without manual SQL.
+
+        _header "Integrity (quick_check)"
+        integrity=$(sqlite3 "$DB" "PRAGMA quick_check;" 2>&1)
+        if [ "$integrity" = "ok" ]; then
+            _ok "ok"
+        else
+            _err "$integrity"
+        fi
+
+        _header "WAL size"
+        if [ -f "$DB-wal" ]; then
+            wal_bytes=$(stat -c%s "$DB-wal" 2>/dev/null || echo 0)
+            awk "BEGIN{printf \"  %.1f MB\n\", $wal_bytes/1048576}"
+            # SQLite auto-checkpoints around 4MB; a much larger WAL means a
+            # long-lived reader (datasette? stuck sync?) is pinning it.
+            if [ "$wal_bytes" -gt 67108864 ]; then
+                _warn "WAL > 64MB — a long-lived reader may be blocking checkpoint"
+            fi
+        else
+            _ok "no WAL file (fully checkpointed)"
+        fi
+
+        _header "Newest row per table"
+        sqlite3 -column "$DB" "
+            SELECT 'obd_1s'       AS tbl, MAX(timestamp) AS newest FROM obd_1s
+            UNION ALL SELECT 'obd_5s',       MAX(timestamp) FROM obd_5s
+            UNION ALL SELECT 'obd_30s',      MAX(timestamp) FROM obd_30s
+            UNION ALL SELECT 'ford_obd_5s',  MAX(timestamp) FROM ford_obd_5s
+            UNION ALL SELECT 'ford_obd_10s', MAX(timestamp) FROM ford_obd_10s
+            UNION ALL SELECT 'ford_obd_20s', MAX(timestamp) FROM ford_obd_20s;
+        " | sed 's/^/  /'
+
+        _header "Open trips (end_time IS NULL)"
+        open_trips=$(sqlite3 "$DB" "SELECT COUNT(*) FROM trips WHERE end_time IS NULL;")
+        if [ "$open_trips" -eq 0 ]; then
+            _ok "none"
+        elif [ "$open_trips" -eq 1 ]; then
+            _warn "1 open trip — normal only if a trip is active right now"
+        else
+            _err "$open_trips open trips — boot repair should leave at most 1"
+        fi
+
+        _header "Unsynced backlog (OBD tables)"
+        sqlite3 -column -header "$DB" "
+            SELECT COUNT(*) AS rows, MIN(timestamp) AS oldest FROM (
+                SELECT timestamp FROM obd_1s       WHERE synced=0
+                UNION ALL SELECT timestamp FROM obd_5s       WHERE synced=0
+                UNION ALL SELECT timestamp FROM obd_30s      WHERE synced=0
+                UNION ALL SELECT timestamp FROM ford_obd_5s  WHERE synced=0
+                UNION ALL SELECT timestamp FROM ford_obd_10s WHERE synced=0
+                UNION ALL SELECT timestamp FROM ford_obd_20s WHERE synced=0
+            );
+        " | sed 's/^/  /'
+        ;;
+
     # ── System health ────────────────────────────────────────────────────────
 
     health)
@@ -335,6 +394,7 @@ case "$cmd" in
         echo "  jarvis trips [n]         Last n trips (default 10)"
         echo "  jarvis dtc               Recent DTC fault codes"
         echo "  jarvis ford [n]          Latest Ford Mode 22 readings (default 10)"
+        echo "  jarvis validate          One-shot pipeline health check"
         echo ""
         echo -e "${BOLD}Datasette${RESET}"
         echo "  jarvis datasette         Status of Datasette service"

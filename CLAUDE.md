@@ -37,17 +37,36 @@ See `pi/CLAUDE.md` for detailed Pi internals: threading model, OBD connection ru
 cd pi && /usr/bin/python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt
 
-# Run all tests with coverage
-cd pi && /usr/bin/python3 -m pytest tests/ --cov=src
+# Run all tests with coverage (venv must be active)
+cd pi && source venv/bin/activate && /usr/bin/python3 -m pytest tests/ --cov=src
 
 # Run a single test file
-cd pi && /usr/bin/python3 -m pytest tests/test_collector.py -v
+cd pi && source venv/bin/activate && /usr/bin/python3 -m pytest tests/test_collector.py -v
 
 # Run a single test by name
-cd pi && /usr/bin/python3 -m pytest tests/test_trip.py::test_trip_start_requires_voltage_and_rpm -v
+cd pi && source venv/bin/activate && /usr/bin/python3 -m pytest tests/test_trip.py::test_trip_start_requires_voltage_and_rpm -v
 ```
 
 Tests run without hardware. `conftest.py` sets required env vars before any `src/` import and inserts `src/` into `sys.path` — no install step needed.
+
+## Operational CLI (Pi — `jarvis`)
+
+`pi/scripts/jarvis` is installed to PATH on the Pi. Run `jarvis help` for the full list. Key commands:
+
+```bash
+jarvis status          # systemd status for rfcomm, collector, and sync timer
+jarvis logs            # tail live OBD log (Ctrl+C to stop)
+jarvis journal [n]     # collector logs via journald (works without USB mounted)
+jarvis sync            # trigger sync now and show result
+jarvis rows            # row counts + unsynced per table
+jarvis trips [n]       # last n trips with duration
+jarvis ford [n]        # latest Mode 22 readings (TCM/PCM/misfires)
+jarvis dtc             # recent DTC fault codes
+jarvis health          # CPU temp, memory, disk, uptime, restart count
+jarvis bt              # Bluetooth dongle + RFCOMM connection status
+jarvis update          # git pull + restart collector
+jarvis datasette start # start Datasette browser at :8001 (on-demand only)
+```
 
 ## Conventions
 - No Claude/Anthropic attribution anywhere — no co-author trailers, no PR descriptions, nothing GitHub-visible
@@ -86,11 +105,12 @@ Tests run without hardware. `conftest.py` sets required env vars before any `src
 collector.stop() → trip_manager.stop() → queue_writer.stop() → obd_connection.disconnect() → conn.close()
 ```
 
-**systemd services** (4 total):
+**systemd services** (5 total):
 - `obd-collector.service` — Type=notify, WatchdogSec=60, Restart=always
 - `obd-sync.service` — oneshot, runs the sync script
 - `obd-sync.timer` — fires `obd-sync.service` every 5 min after boot
 - `rfcomm-connect.service` — binds `/dev/rfcomm0` to the OBDLink MX+ MAC address at boot; uses `Wants=` (not `Requires=`) so `obd-collector.service` starts even if BT binding fails on the first attempt; includes `ExecStartPre=-/usr/bin/rfcomm release 0` to clear any stale binding from a previous session before connecting
+- `obd-datasette.service` — on-demand only (not enabled at boot); serves read-only Datasette browser at `:8001`; start via `jarvis datasette start`
 
 **Schema is create-only**: `storage.init_schema()` runs `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS` on every boot — no migration logic. The schema is treated as final; changing a column on an already-deployed DB requires wiping `obd.db` (the data is synced to PostgreSQL, the USB copy is a backup).
 

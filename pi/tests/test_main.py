@@ -78,6 +78,7 @@ class TestMain:
 
         mock_conn = MagicMock()
         mock_qw = MagicMock()
+        mock_qw.write_failing = False
         mock_coll = MagicMock()
         mock_obd = MagicMock()
         mock_tm = MagicMock()
@@ -87,6 +88,7 @@ class TestMain:
              patch("main.health.increment_restart_count", return_value=1), \
              patch("main.get_connection", return_value=mock_conn), \
              patch("main.init_schema"), \
+             patch("main.repair_orphaned_trips"), \
              patch("main.QueueWriter", return_value=mock_qw), \
              patch("main.OBDConnection", return_value=mock_obd), \
              patch("main.TripManager", return_value=mock_tm), \
@@ -115,6 +117,7 @@ class TestMain:
              patch("main.health.increment_restart_count", return_value=1), \
              patch("main.get_connection", return_value=mock_conn), \
              patch("main.init_schema"), \
+             patch("main.repair_orphaned_trips"), \
              patch("main.QueueWriter", return_value=mock_qw), \
              patch("main.OBDConnection", return_value=mock_obd), \
              patch("main.TripManager", return_value=mock_tm), \
@@ -128,6 +131,7 @@ class TestMain:
         """A dead drain thread must stop watchdog pings so systemd restarts us."""
         mock_qw = MagicMock()
         mock_qw.is_alive = False
+        mock_qw.write_failing = False
         mock_coll = MagicMock()
         mock_coll.is_monitor_alive.return_value = True
 
@@ -139,10 +143,27 @@ class TestMain:
         mock_qw.stop.assert_called_once()       # clean shutdown still ran
         mock_conn.close.assert_called_once()
 
+    def test_main_exits_without_pinging_when_writes_failing(self):
+        """A live drain thread whose flushes all fail (USB unmounted) must exit."""
+        mock_qw = MagicMock()
+        mock_qw.is_alive = True
+        mock_qw.write_failing = True
+        mock_coll = MagicMock()
+        mock_coll.is_monitor_alive.return_value = True
+
+        notifier, mock_sleep, mock_conn = self._run_main_with_dead_worker(mock_qw, mock_coll)
+
+        pinged = [c.args for c in notifier.notify.call_args_list]
+        assert ("WATCHDOG=1",) not in pinged   # withheld ping so systemd restarts
+        mock_sleep.assert_not_called()          # broke before sleeping
+        mock_qw.stop.assert_called_once()       # clean shutdown still ran
+        mock_conn.close.assert_called_once()
+
     def test_main_exits_without_pinging_when_monitor_dead(self):
         """A dead obd-monitor thread must likewise stop pings and exit."""
         mock_qw = MagicMock()
         mock_qw.is_alive = True
+        mock_qw.write_failing = False
         mock_coll = MagicMock()
         mock_coll.is_monitor_alive.return_value = False
 
@@ -165,6 +186,7 @@ class TestMain:
              patch("main.health.increment_restart_count", return_value=1), \
              patch("main.get_connection", return_value=MagicMock()), \
              patch("main.init_schema"), \
+             patch("main.repair_orphaned_trips"), \
              patch("main.QueueWriter", return_value=MagicMock()), \
              patch("main.OBDConnection", return_value=MagicMock()), \
              patch("main.TripManager", return_value=MagicMock()), \

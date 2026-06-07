@@ -305,3 +305,113 @@ class TestUpdateTripEnd:
         update_trip_end(qw, trip_row, "2026-01-01T01:00:00+00:00")
         row = db_conn.execute("SELECT synced FROM trips WHERE id=?", (trip_row,)).fetchone()
         assert row["synced"] == 0
+
+
+# ---------------------------------------------------------------------------
+# repair_orphaned_trips()
+# ---------------------------------------------------------------------------
+
+class TestRepairOrphanedTrips:
+    @staticmethod
+    def _insert_trip(conn, trip_id, trip_number, start_time, end_time=None):
+        conn.execute(
+            "INSERT INTO trips (id, trip_number, start_time, end_time, synced) "
+            "VALUES (?, ?, ?, ?, 0)",
+            (trip_id, trip_number, start_time, end_time),
+        )
+        conn.commit()
+
+    @staticmethod
+    def _insert_reading(conn, table, trip_id, timestamp):
+        import uuid
+        conn.execute(
+            f"INSERT INTO {table} (id, trip_id, timestamp, synced) VALUES (?, ?, ?, 0)",
+            (str(uuid.uuid4()), trip_id, timestamp),
+        )
+        conn.commit()
+
+    def test_returns_zero_when_no_open_trips(self, db_conn, trip_row):
+        from storage import repair_orphaned_trips
+        # trip_row has no end_time, so close it first to leave nothing open.
+        db_conn.execute(
+            "UPDATE trips SET end_time='2026-01-01T01:00:00+00:00' WHERE id=?",
+            (trip_row,),
+        )
+        db_conn.commit()
+        assert repair_orphaned_trips(db_conn) == 0
+
+    def test_closes_trip_using_last_reading_timestamp(self, db_conn):
+        from storage import repair_orphaned_trips
+        tid = "trip-aaa"
+        self._insert_trip(db_conn, tid, 1, "2026-01-01T00:00:00+00:00")
+        self._insert_reading(db_conn, "obd_1s", tid, "2026-01-01T00:10:00+00:00")
+        self._insert_reading(db_conn, "obd_1s", tid, "2026-01-01T00:30:00+00:00")
+        self._insert_reading(db_conn, "obd_5s", tid, "2026-01-01T00:20:00+00:00")
+
+        assert repair_orphaned_trips(db_conn) == 1
+
+        row = db_conn.execute(
+            "SELECT end_time, duration_s, synced FROM trips WHERE id=?", (tid,)
+        ).fetchone()
+        # Latest reading across all tables is the 00:30:00 obd_1s row.
+        assert row["end_time"] == "2026-01-01T00:30:00+00:00"
+        assert abs(row["duration_s"] - 1800) <= 1
+        assert row["synced"] == 0
+
+    def test_picks_latest_across_ford_tables(self, db_conn):
+        from storage import repair_orphaned_trips
+        tid = "trip-ford"
+        self._insert_trip(db_conn, tid, 1, "2026-01-01T00:00:00+00:00")
+        self._insert_reading(db_conn, "obd_1s", tid, "2026-01-01T00:05:00+00:00")
+        self._insert_reading(db_conn, "ford_obd_20s", tid, "2026-01-01T00:40:00+00:00")
+
+        repair_orphaned_trips(db_conn)
+
+        row = db_conn.execute("SELECT end_time FROM trips WHERE id=?", (tid,)).fetchone()
+        assert row["end_time"] == "2026-01-01T00:40:00+00:00"
+
+    def test_trip_with_no_readings_closed_at_start_time(self, db_conn):
+        from storage import repair_orphaned_trips
+        tid = "trip-empty"
+        self._insert_trip(db_conn, tid, 1, "2026-01-01T00:00:00+00:00")
+
+        assert repair_orphaned_trips(db_conn) == 1
+
+        row = db_conn.execute(
+            "SELECT end_time, duration_s FROM trips WHERE id=?", (tid,)
+        ).fetchone()
+        assert row["end_time"] == "2026-01-01T00:00:00+00:00"
+        assert row["duration_s"] == 0
+
+    def test_does_not_touch_already_closed_trips(self, db_conn):
+        from storage import repair_orphaned_trips
+        closed = "trip-closed"
+        self._insert_trip(
+            db_conn, closed, 1,
+            "2026-01-01T00:00:00+00:00", "2026-01-01T00:30:00+00:00",
+        )
+        db_conn.execute("UPDATE trips SET synced=1 WHERE id=?", (closed,))
+        db_conn.commit()
+
+        assert repair_orphaned_trips(db_conn) == 0
+
+        row = db_conn.execute(
+            "SELECT end_time, synced FROM trips WHERE id=?", (closed,)
+        ).fetchone()
+        # Untouched — end_time unchanged and synced flag not reset.
+        assert row["end_time"] == "2026-01-01T00:30:00+00:00"
+        assert row["synced"] == 1
+
+    def test_repairs_multiple_open_trips(self, db_conn):
+        from storage import repair_orphaned_trips
+        self._insert_trip(db_conn, "t1", 1, "2026-01-01T00:00:00+00:00")
+        self._insert_trip(db_conn, "t2", 2, "2026-01-02T00:00:00+00:00")
+        self._insert_reading(db_conn, "obd_1s", "t1", "2026-01-01T00:15:00+00:00")
+        self._insert_reading(db_conn, "obd_1s", "t2", "2026-01-02T00:25:00+00:00")
+
+        assert repair_orphaned_trips(db_conn) == 2
+
+        open_count = db_conn.execute(
+            "SELECT COUNT(*) FROM trips WHERE end_time IS NULL"
+        ).fetchone()[0]
+        assert open_count == 0
