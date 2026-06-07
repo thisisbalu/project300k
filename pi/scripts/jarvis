@@ -5,7 +5,8 @@
 DB="/mnt/usb/data/obd.db"
 LOG="/mnt/usb/logs/obd.log"
 REPO="/home/balu/project300k"
-PIP="$REPO/pi/venv/bin/pip"
+PI_DIR="$REPO/pi"
+PIP="$PI_DIR/venv/bin/pip"
 
 BOLD="\033[1m"
 GREEN="\033[32m"
