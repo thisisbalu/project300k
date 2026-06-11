@@ -17,13 +17,22 @@ Collects OBD data → stores in SQLite → syncs to home server via iPhone hotsp
 - SQLite via sqlite3 (stdlib)
 - systemd watchdog via sd_notify
 - psutil, smbus2, sdnotify, requests
+- gpiozero (status LEDs) — the `lgpio` pin-factory backend is a C extension installed on the Pi only via `install.sh`, never in `requirements.txt` (keeps Mac dev installs clean). `led_status.py` imports `gpiozero` inside `LedDriver` so the module imports under pytest without a GPIO backend.
 
 ## Running Tests
 ```bash
-/usr/bin/python3 -m pytest pi/tests/ --cov=pi/src
+cd pi && source venv/bin/activate && /usr/bin/python3 -m pytest tests/ --cov=src
 ```
-Dev dependencies: `pip install -r pi/requirements-dev.txt`
-251 tests, 97% coverage. All tests run without hardware.
+`pytest.ini` sets `testpaths = tests`, so run from `pi/`. Dev deps: `pip install -r requirements-dev.txt`.
+315 tests, 94% coverage. All tests run without hardware (gpiozero is mocked).
+
+## Provisioning the Pi (`scripts/install.sh`)
+One-shot installer, run on the Pi from a checked-out repo at `/home/balu/project300k`. Idempotent — safe to re-run. It:
+- creates `/etc/obd-collector/`, `/mnt/usb/data/`, `/mnt/usb/logs/`
+- writes `/etc/obd-collector/config.env` with `REPLACE_ME` placeholders **only if absent** (never overwrites a real config). Required keys: `API_URL`, `API_KEY` (`openssl rand -hex 32`), `TAILSCALE_IP`. The collector exits on boot if any required value is missing.
+- builds `venv/`, installs `requirements.txt` + `datasette`
+- symlinks `scripts/jarvis` → `/usr/local/bin/jarvis`
+- copies all 5 systemd units into `/etc/systemd/system/` and enables `rfcomm-connect`, `obd-collector`, `obd-sync.timer`, `obd-datasette` (collector first connection can take up to `TimeoutStartSec=300`)
 
 ## OBD Connection
 Always use:
@@ -112,6 +121,35 @@ Both counter files are `fsync`'d after every write — engine off = immediate po
 - Pi health snapshot included in every sync payload (reads reconnect_count from file)
 - Ford tables skipped silently at DEBUG level if they don't exist yet
 
+## Status LEDs (`led_status.py`)
+Two KY-016 common-cathode RGB LEDs (onboard 1kΩ resistors → drive **active-high**, no external parts) on the GPIO header, avoiding GPIO2/3 (DS3231 I²C):
+
+| | R | G | B | GND |
+|---|---|---|---|---|
+| **LED A — Pipeline** | BCM17 | BCM27 | BCM22 | — |
+| **LED B — Attention** | BCM5 | BCM6 | BCM13 | — |
+
+Separate long-lived process (own systemd service), fully decoupled from the collector — it **only reads**: `systemctl is-active`, sysfs (`health.py` helpers), and **read-only** SELECTs against the DB. DB handle is opened fresh per poll with `PRAGMA query_only=ON` and closed immediately so it never pins the WAL or blocks the collector's checkpoint. Skips the DB entirely if USB is unmounted (and checks the file exists first, so `sqlite3.connect` never creates a stray DB on the SD card).
+
+`evaluate_state(Signals) -> (Display, Display)` is a **pure function** — all colour/priority logic is unit-tested without GPIO. `gpiozero` is imported inside `LedDriver` only; `LedDriver.apply()` tracks the shown `Display` per LED and skips no-op writes so the slow blink isn't restarted every poll.
+
+**LED A — Pipeline** (*is data being recorded?*) — priority `off > red > amber > green > blue`:
+```
+off    collector process down (systemctl not active)
+blue   parked/connecting — up but obd_1s stale, no fault
+green  OBD flowing — newest obd_1s within LED_DATA_STALE_S
+red    FAULT — BT dongle (hci0) missing · USB unmounted · open trip but obd_1s stale
+amber  Pi warning, still capturing — CPU ≥ LED_CPU_WARN_C · disk < LED_DISK_WARN_MB · rtc not ok
+```
+**LED B — Attention** (*does it need me?*) — dark when fine, priority `magenta > blue > green > off`:
+```
+off       synced, no trip, no faults
+green*     open trip (end_time IS NULL)                       (* = slow blink)
+blue       sync behind — oldest unsynced OBD row older than LED_SYNC_BEHIND_DAYS (default 10d)
+magenta    DTC within LED_DTC_RECENT_DAYS
+```
+All thresholds/pins are in `config.env` (see `config.py` docstring). Verify wiring with `jarvis led test` (stops the daemon, cycles every state, restarts it).
+
 ## Logging
 - **Collector** writes to `/mnt/usb/logs/obd.log` (5MB × 7 rotating files = 35MB cap).
   The rotating file handler is attached only by `main.py` via `logger.init_file_logging()`.
@@ -141,6 +179,7 @@ Do NOT log: individual PID values, every poll cycle, WAL checkpoints, per-tick w
   - `TimeoutStopSec=60` — covers 30s OBD timeout + 15s queue drain before SIGKILL
 - `obd-sync.service` — Type=oneshot, TimeoutStartSec=120
 - `obd-sync.timer` — OnBootSec=5min, OnUnitActiveSec=5min
+- `obd-led.service` — Type=simple, Restart=always, RestartSec=10, `SupplementaryGroups=gpio`; runs `led_status.py`
 
 ## Shutdown Sequence (main.py finally block)
 ```

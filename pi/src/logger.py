@@ -96,3 +96,14 @@ def configure_sync_logging() -> None:
     surfaces sync progress there without opening the collector's USB log file.
     """
     _stderr_handler.setLevel(logging.INFO)
+
+
+def configure_led_logging() -> None:
+    """Configure logging for the LED status process: stderr (INFO+) only, no file.
+
+    The LED daemon runs as a separate long-lived systemd service; its output is
+    captured by journald (`journalctl -u obd-led`). Like the sync process it must
+    NOT attach the collector's RotatingFileHandler — sharing one file across
+    processes corrupts rotation.
+    """
+    _stderr_handler.setLevel(logging.INFO)

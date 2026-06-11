@@ -105,12 +105,13 @@ jarvis datasette start # start Datasette browser at :8001 (on-demand only)
 collector.stop() → trip_manager.stop() → queue_writer.stop() → obd_connection.disconnect() → conn.close()
 ```
 
-**systemd services** (5 total):
+**systemd services** (6 total):
 - `obd-collector.service` — Type=notify, WatchdogSec=60, Restart=always
 - `obd-sync.service` — oneshot, runs the sync script
 - `obd-sync.timer` — fires `obd-sync.service` every 5 min after boot
 - `rfcomm-connect.service` — binds `/dev/rfcomm0` to the OBDLink MX+ MAC address at boot; uses `Wants=` (not `Requires=`) so `obd-collector.service` starts even if BT binding fails on the first attempt; includes `ExecStartPre=-/usr/bin/rfcomm release 0` to clear any stale binding from a previous session before connecting
 - `obd-datasette.service` — on-demand only (not enabled at boot); serves read-only Datasette browser at `:8001`; start via `jarvis datasette start`
+- `obd-led.service` — Type=simple, Restart=always; runs `led_status.py`, the status-LED daemon. Reads-only (systemd state + sysfs + read-only DB), fully decoupled from the collector. See `pi/CLAUDE.md` for the two-LED behaviour spec and GPIO pin map.
 
 **Schema is create-only**: `storage.init_schema()` runs `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS` on every boot — no migration logic. The schema is treated as final; changing a column on an already-deployed DB requires wiping `obd.db` (the data is synced to PostgreSQL, the USB copy is a backup).
 

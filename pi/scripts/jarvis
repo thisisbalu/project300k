@@ -69,6 +69,8 @@ case "$cmd" in
         sudo systemctl status obd-collector.service --no-pager -l
         _header "obd-sync.timer"
         sudo systemctl status obd-sync.timer --no-pager -l
+        _header "obd-led"
+        sudo systemctl status obd-led.service --no-pager -l
         ;;
 
     restart)
@@ -357,6 +359,34 @@ case "$cmd" in
         esac
         ;;
 
+    # ── Status LEDs ──────────────────────────────────────────────────────────
+
+    led)
+        case "${2:-status}" in
+            status)
+                sudo systemctl status obd-led.service --no-pager -l
+                ;;
+            test)
+                # Stop the daemon first so it releases the GPIO pins, run the
+                # colour cycle in the foreground, then hand the pins back.
+                echo "Cycling both LEDs (~8s) — watch the wiring..."
+                sudo systemctl stop obd-led.service
+                "$PI_DIR/venv/bin/python" "$PI_DIR/src/led_status.py" --test
+                sudo systemctl start obd-led.service
+                _ok "Test complete — daemon restarted"
+                ;;
+            start|stop|restart)
+                sudo systemctl "$2" obd-led.service
+                _ok "obd-led $2"
+                ;;
+            *)
+                _err "Unknown led subcommand: $2"
+                echo "Usage: jarvis led [status|test|start|stop|restart]"
+                exit 1
+                ;;
+        esac
+        ;;
+
     # ── Maintenance ───────────────────────────────────────────────────────────
 
     update)
@@ -382,7 +412,7 @@ case "$cmd" in
         echo "  jarvis sync-log [n]      Sync service logs via journald"
         echo ""
         echo -e "${BOLD}Services${RESET}"
-        echo "  jarvis status            Status of all 3 services"
+        echo "  jarvis status            Status of all services"
         echo "  jarvis restart           Restart obd-collector"
         echo "  jarvis start             Start obd-collector"
         echo "  jarvis stop              Stop obd-collector"
@@ -400,6 +430,11 @@ case "$cmd" in
         echo "  jarvis datasette         Status of Datasette service"
         echo "  jarvis datasette start   Start Datasette (browse at :8001)"
         echo "  jarvis datasette stop    Stop Datasette"
+        echo ""
+        echo -e "${BOLD}Status LEDs${RESET}"
+        echo "  jarvis led               obd-led service status"
+        echo "  jarvis led test          Cycle both LEDs to verify wiring"
+        echo "  jarvis led start|stop|restart   Control the LED daemon"
         echo ""
         echo -e "${BOLD}System${RESET}"
         echo "  jarvis health            CPU temp, memory, disk, uptime"

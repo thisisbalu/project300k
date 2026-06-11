@@ -35,6 +35,19 @@ OBD_PORT=/dev/rfcomm0
 SYNC_BATCH_SIZE=500
 DB_PATH=/mnt/usb/data/obd.db
 LOG_PATH=/mnt/usb/logs/obd.log
+
+# Status LEDs (optional — defaults shown). See pi/CLAUDE.md for the behaviour spec.
+LED_ENABLED=true
+LED_SYNC_BEHIND_DAYS=10
+LED_DTC_RECENT_DAYS=7
+LED_CPU_WARN_C=75
+# GPIO (BCM) pins — LED A = Pipeline, LED B = Attention
+LED_A_R=17
+LED_A_G=27
+LED_A_B=22
+LED_B_R=5
+LED_B_G=6
+LED_B_B=13
 EOF
     echo "    Config created at $CONFIG_DIR/config.env"
     echo "    IMPORTANT: Replace all REPLACE_ME values before starting the service"
@@ -55,6 +68,10 @@ python3 -m venv "$PI_DIR/venv"
 "$PI_DIR/venv/bin/pip" install --upgrade pip
 "$PI_DIR/venv/bin/pip" install -r "$PI_DIR/requirements.txt"
 "$PI_DIR/venv/bin/pip" install datasette
+# lgpio is the gpiozero pin-factory backend for the status LEDs. Pi-only —
+# it is a C extension that does not build on the Mac dev machine, so it is
+# installed here rather than in requirements.txt (which must stay Mac-safe).
+"$PI_DIR/venv/bin/pip" install lgpio
 
 echo "==> Installing jarvis"
 chmod +x "$PI_DIR/scripts/jarvis"
@@ -66,6 +83,7 @@ sudo cp "$PI_DIR/systemd/obd-collector.service" "$SYSTEMD_DIR/"
 sudo cp "$PI_DIR/systemd/obd-sync.service" "$SYSTEMD_DIR/"
 sudo cp "$PI_DIR/systemd/obd-sync.timer" "$SYSTEMD_DIR/"
 sudo cp "$PI_DIR/systemd/obd-datasette.service" "$SYSTEMD_DIR/"
+sudo cp "$PI_DIR/systemd/obd-led.service" "$SYSTEMD_DIR/"
 
 echo "==> Enabling services"
 sudo systemctl daemon-reload
@@ -73,6 +91,7 @@ sudo systemctl enable rfcomm-connect.service
 sudo systemctl enable obd-collector.service
 sudo systemctl enable obd-sync.timer
 sudo systemctl enable obd-datasette.service
+sudo systemctl enable obd-led.service
 
 echo ""
 echo "Install complete."
@@ -84,5 +103,6 @@ echo "  3. Pair OBDLink MX+ via bluetoothctl and bind rfcomm0"
 echo "  4. sudo systemctl start obd-collector"
 echo "     (TimeoutStartSec=300 — allow up to 5 min for first OBD connection)"
 echo "  5. sudo systemctl start obd-sync.timer"
-echo "  6. Check status: sudo systemctl status obd-collector obd-sync.timer"
-echo "  7. Watch logs: tail -f /mnt/usb/logs/obd.log"
+echo "  6. sudo systemctl start obd-led      (verify wiring first: jarvis led test)"
+echo "  7. Check status: sudo systemctl status obd-collector obd-sync.timer obd-led"
+echo "  8. Watch logs: tail -f /mnt/usb/logs/obd.log"

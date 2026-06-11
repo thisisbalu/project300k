@@ -1,0 +1,30 @@
+# obd-led.service
+#
+# Status LED daemon — drives the two KY-016 RGB LEDs from collector state.
+# Runs as its own long-lived process, fully decoupled from the collector:
+# it only reads systemd unit status, sysfs, and the SQLite DB (read-only).
+#
+#   Type=simple    — no readiness handshake; the loop starts immediately.
+#   Restart=always — recover from any crash; RestartSec=10 avoids thrashing.
+#
+# SupplementaryGroups=gpio grants access to /dev/gpiochip0 for the lgpio
+# backend even if the user's primary groups change.
+
+[Unit]
+Description=OBD Status LEDs — Project 300K
+After=multi-user.target
+
+[Service]
+Type=simple
+User=balu
+SupplementaryGroups=gpio
+WorkingDirectory=/home/balu/project300k/pi
+ExecStart=/home/balu/project300k/pi/venv/bin/python src/led_status.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

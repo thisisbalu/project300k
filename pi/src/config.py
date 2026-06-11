@@ -16,12 +16,47 @@ Optional values (defaults shown):
     DB_PATH          — /mnt/usb/data/obd.db
     LOG_PATH         — /mnt/usb/logs/obd.log
 
+Status LED values (defaults shown) — consumed by led_status.py only:
+    LED_ENABLED          — true
+    LED_POLL_S           — 2.0   (status evaluation interval)
+    LED_DATA_STALE_S     — 6.0   (obd_1s older than this => OBD not flowing)
+    LED_SYNC_BEHIND_DAYS — 10.0  (oldest unsynced row older than this => LED B blue)
+    LED_DTC_RECENT_DAYS  — 7.0   (a DTC newer than this => LED B magenta)
+    LED_CPU_WARN_C       — 75.0  (CPU hotter than this => LED A amber)
+    LED_DISK_WARN_MB     — 500.0 (less free space than this => LED A amber)
+    LED_A_R/G/B          — 17/27/22  (BCM pins, LED A = Pipeline)
+    LED_B_R/G/B          — 5/6/13    (BCM pins, LED B = Attention)
+
 The module-level `config` instance is imported by all other modules.
 """
 
 import os
 import sys
 from dataclasses import dataclass
+
+
+def _env_bool(key: str, default: bool) -> bool:
+    """Read a boolean env var. Truthy: 1/true/yes/on (case-insensitive)."""
+    val = os.environ.get(key)
+    if val is None:
+        return default
+    return val.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_float(key: str, default: float) -> float:
+    """Read a float env var, falling back to default on missing/invalid."""
+    try:
+        return float(os.environ[key])
+    except (KeyError, ValueError):
+        return default
+
+
+def _env_int(key: str, default: int) -> int:
+    """Read an int env var, falling back to default on missing/invalid."""
+    try:
+        return int(os.environ[key])
+    except (KeyError, ValueError):
+        return default
 
 
 CONFIG_PATH = "/etc/obd-collector/config.env"
@@ -42,6 +77,19 @@ class Config:
     SYNC_BATCH_SIZE: int
     DB_PATH: str
     LOG_PATH: str
+    LED_ENABLED: bool
+    LED_POLL_S: float
+    LED_DATA_STALE_S: float
+    LED_SYNC_BEHIND_DAYS: float
+    LED_DTC_RECENT_DAYS: float
+    LED_CPU_WARN_C: float
+    LED_DISK_WARN_MB: float
+    LED_A_R: int
+    LED_A_G: int
+    LED_A_B: int
+    LED_B_R: int
+    LED_B_G: int
+    LED_B_B: int
 
     def __str__(self) -> str:
         """Return a log-safe string with API_KEY masked."""
@@ -130,6 +178,19 @@ def _load() -> Config:
         SYNC_BATCH_SIZE=batch_size,
         DB_PATH=os.environ.get("DB_PATH", "/mnt/usb/data/obd.db"),
         LOG_PATH=os.environ.get("LOG_PATH", "/mnt/usb/logs/obd.log"),
+        LED_ENABLED=_env_bool("LED_ENABLED", True),
+        LED_POLL_S=_env_float("LED_POLL_S", 2.0),
+        LED_DATA_STALE_S=_env_float("LED_DATA_STALE_S", 6.0),
+        LED_SYNC_BEHIND_DAYS=_env_float("LED_SYNC_BEHIND_DAYS", 10.0),
+        LED_DTC_RECENT_DAYS=_env_float("LED_DTC_RECENT_DAYS", 7.0),
+        LED_CPU_WARN_C=_env_float("LED_CPU_WARN_C", 75.0),
+        LED_DISK_WARN_MB=_env_float("LED_DISK_WARN_MB", 500.0),
+        LED_A_R=_env_int("LED_A_R", 17),
+        LED_A_G=_env_int("LED_A_G", 27),
+        LED_A_B=_env_int("LED_A_B", 22),
+        LED_B_R=_env_int("LED_B_R", 5),
+        LED_B_G=_env_int("LED_B_G", 6),
+        LED_B_B=_env_int("LED_B_B", 13),
     )
 
 
