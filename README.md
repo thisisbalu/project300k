@@ -155,7 +155,7 @@ system's cue to flag a developing fault.
 
 ## Hardware
 
-### In Car (~$212 CAD)
+### In Car (~$216 CAD)
 | Item | Cost |
 |------|------|
 | OBDLink MX+ | ~$120 |
@@ -164,8 +164,15 @@ system's cue to flag a developing fault.
 | TP-Link UB500 USB Bluetooth dongle | ~$15 |
 | SanDisk Ultra Fit 32GB USB flash drive | ~$12 |
 | Samsung Pro Endurance 32GB microSD | ~$15 |
+| Two KY-016 RGB LED modules (status indicators) | ~$4 |
 | Pi case | ~$8 |
 | micro USB OTG adapter | ~$5 |
+
+Two RGB status LEDs wired to the GPIO header report system health at a glance,
+driven by a decoupled `obd-led` daemon. **LED A (Pipeline)** — off = collector
+stopped, blue = up/connecting, green = data flowing, red = fault, amber = Pi
+warning. **LED B (Attention)** — dark when healthy, green-blink = trip active,
+blue = sync behind, magenta = recent DTC. See `pi/CLAUDE.md` for the full spec.
 
 ### Home Server (~$350 CAD)
 Dell OptiPlex 7080 Micro or HP ProDesk 600 G6 Mini — 16GB+ RAM, 256GB+ NVMe, i7 10th gen.
