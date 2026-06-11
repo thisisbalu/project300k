@@ -71,6 +71,10 @@ python3 -m venv "$PI_DIR/venv"
 # lgpio is the gpiozero pin-factory backend for the status LEDs. Pi-only —
 # it is a C extension that does not build on the Mac dev machine, so it is
 # installed here rather than in requirements.txt (which must stay Mac-safe).
+# Newer Raspberry Pi OS (Python 3.13 / Trixie) has no prebuilt lgpio wheel, so
+# pip compiles it from source: that needs swig + python headers + the lgpio C
+# library (liblgpio-dev) or the build fails (missing swig / -llgpio).
+sudo apt-get install -y swig python3-dev liblgpio-dev
 "$PI_DIR/venv/bin/pip" install lgpio
 
 echo "==> Installing jarvis"
