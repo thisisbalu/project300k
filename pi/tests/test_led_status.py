@@ -238,6 +238,12 @@ def test_collector_active_true(monkeypatch):
     assert led._collector_active() is True
 
 
+def test_collector_active_activating(monkeypatch):
+    monkeypatch.setattr(led.subprocess, "run",
+                        lambda *a, **k: types.SimpleNamespace(stdout="activating\n"))
+    assert led._collector_active() is True
+
+
 def test_collector_active_false(monkeypatch):
     monkeypatch.setattr(led.subprocess, "run",
                         lambda *a, **k: types.SimpleNamespace(stdout="inactive\n"))

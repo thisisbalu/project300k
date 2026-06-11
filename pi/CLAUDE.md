@@ -135,8 +135,8 @@ Separate long-lived process (own systemd service), fully decoupled from the coll
 
 **LED A — Pipeline** (*is data being recorded?*) — priority `off > red > amber > green > blue`:
 ```
-off    collector process down (systemctl not active)
-blue   parked/connecting — up but obd_1s stale, no fault
+off    collector stopped/failed (systemctl inactive or failed)
+blue   parked/connecting — up (active or activating) but obd_1s stale, no fault
 green  OBD flowing — newest obd_1s within LED_DATA_STALE_S
 red    FAULT — BT dongle (hci0) missing · USB unmounted · open trip but obd_1s stale
 amber  Pi warning, still capturing — CPU ≥ LED_CPU_WARN_C · disk < LED_DISK_WARN_MB · rtc not ok

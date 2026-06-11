@@ -145,13 +145,21 @@ def _parse_ts(value: str | None) -> datetime | None:
 
 
 def _collector_active() -> bool:
-    """True if obd-collector.service reports active to systemd."""
+    """True if obd-collector.service is up (running or starting up).
+
+    The collector is Type=notify, so systemd only reports "active" after the
+    OBD link connects and the process sends READY=1. The whole connect/retry
+    phase reports "activating" — the process is up and trying, which is the
+    spec's blue ("up but OBD not connected") state, not off. Counting both
+    means LED A shows blue while connecting instead of going dark; only a
+    genuinely stopped/failed unit (inactive/failed) maps to off.
+    """
     try:
         result = subprocess.run(
             ["systemctl", "is-active", "obd-collector.service"],
             capture_output=True, text=True, timeout=5,
         )
-        return result.stdout.strip() == "active"
+        return result.stdout.strip() in ("active", "activating")
     except (OSError, subprocess.SubprocessError):
         return False
 
