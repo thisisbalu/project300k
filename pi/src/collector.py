@@ -189,8 +189,17 @@ class Collector:
                 # Best-effort restart so data collection continues.
                 try:
                     conn.start()
-                except Exception:
-                    pass
+                except Exception as restart_err:
+                    # The async loop is now stopped but conn.is_connected() still
+                    # reports True (it reflects port status, not the loop), so the
+                    # monitor would never reconnect and collection would silently
+                    # halt for the rest of the trip. Null the connection so
+                    # _monitor_connection() forces a reconnect on its next tick.
+                    logger.error(
+                        f"Failed to restart async loop after DTC query: "
+                        f"{restart_err} — forcing reconnect"
+                    )
+                    self._async_conn = None
                 return None
 
     def _connect_and_watch(self) -> None:

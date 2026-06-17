@@ -351,6 +351,23 @@ class TestMakeCallback:
         # Loop must be restarted even after a query failure
         assert mock_async.start.call_count >= 1
 
+    def test_query_sync_forces_reconnect_when_restart_fails(self):
+        """If both the query and the recovery start() fail, the async loop is
+        dead but is_connected() still reports True — so query_sync must null
+        _async_conn to make the monitor force a reconnect."""
+        c, _, _ = self._make_collector(trip_id="t")
+        mock_async = MagicMock()
+        mock_async.is_connected.return_value = True
+        mock_async.query.side_effect = Exception("serial error")
+        mock_async.start.side_effect = Exception("port wedged")
+        c._async_conn = mock_async
+
+        import obd
+        result = c.query_sync(obd.commands.GET_DTC)
+
+        assert result is None
+        assert c._async_conn is None
+
     def test_query_sync_survives_concurrent_reconnect_nulling_conn(self):
         """The monitor thread may null _async_conn after the connectivity
         check. The snapshot must keep query_sync operating on the original
