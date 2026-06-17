@@ -301,7 +301,11 @@ class Collector:
             Tuple of (pids_seen_in_window, total_pids_registered).
         """
         cutoff = time.monotonic() - window_s
-        active = sum(1 for t in self._pid_last_seen.values() if t >= cutoff)
+        # Snapshot before iterating: the OBD async callback thread inserts new
+        # keys into _pid_last_seen (and the reconnect path clears it), so
+        # iterating the live dict here risks 'dictionary changed size during
+        # iteration'. list() takes an atomic snapshot under the GIL.
+        active = sum(1 for t in list(self._pid_last_seen.values()) if t >= cutoff)
         return active, len(ALL_PIDS)
 
     def latest(self, column: str) -> object:
