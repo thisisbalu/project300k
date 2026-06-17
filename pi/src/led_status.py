@@ -187,7 +187,7 @@ def _data_fresh(conn: sqlite3.Connection, now: datetime) -> bool:
     """True if the newest obd_1s row is within LED_DATA_STALE_S of now."""
     try:
         row = conn.execute("SELECT MAX(timestamp) FROM obd_1s").fetchone()
-    except sqlite3.OperationalError:
+    except sqlite3.Error:
         return False
     ts = _parse_ts(row[0]) if row else None
     return ts is not None and (now - ts).total_seconds() <= config.LED_DATA_STALE_S
@@ -199,7 +199,7 @@ def _has_open_trip(conn: sqlite3.Connection) -> bool:
         row = conn.execute(
             "SELECT 1 FROM trips WHERE end_time IS NULL LIMIT 1"
         ).fetchone()
-    except sqlite3.OperationalError:
+    except sqlite3.Error:
         return False
     return row is not None
 
@@ -208,7 +208,7 @@ def _has_recent_dtc(conn: sqlite3.Connection, now: datetime) -> bool:
     """True if a DTC was recorded within LED_DTC_RECENT_DAYS."""
     try:
         row = conn.execute("SELECT MAX(timestamp) FROM dtc_events").fetchone()
-    except sqlite3.OperationalError:
+    except sqlite3.Error:
         return False
     ts = _parse_ts(row[0]) if row else None
     return ts is not None and (now - ts).total_seconds() <= config.LED_DTC_RECENT_DAYS * 86400
@@ -226,7 +226,7 @@ def _is_sync_behind(conn: sqlite3.Connection, now: datetime) -> bool:
             row = conn.execute(
                 f"SELECT MIN(timestamp) FROM {table} WHERE synced=0"
             ).fetchone()
-        except sqlite3.OperationalError:
+        except sqlite3.Error:
             continue
         ts = _parse_ts(row[0]) if row else None
         if ts is not None and (now - ts).total_seconds() > threshold_s:
