@@ -24,7 +24,7 @@ Collects OBD data → stores in SQLite → syncs to home server via iPhone hotsp
 cd pi && source venv/bin/activate && /usr/bin/python3 -m pytest tests/ --cov=src
 ```
 `pytest.ini` sets `testpaths = tests`, so run from `pi/`. Dev deps: `pip install -r requirements-dev.txt`.
-315 tests, 94% coverage. All tests run without hardware (gpiozero is mocked).
+324 tests, ~94% coverage. All tests run without hardware (gpiozero is mocked).
 
 ## Provisioning the Pi (`scripts/install.sh`)
 One-shot installer, run on the Pi from a checked-out repo at `/home/balu/project300k`. Idempotent — safe to re-run. It:
@@ -63,6 +63,7 @@ time-filter (`time.monotonic()`) to skip enqueue until `interval_s` has elapsed.
 ## Trip Detection
 - Trip start: battery_v > 13.0V AND rpm > 0 (both required)
 - Trip end: rpm = 0 for >30s AND battery_v < 12.5V (both required)
+- `_last_voltage`/`_last_voltage_mono` are reset to None in `_end_trip()` — TripManager outlives key-off, so a stale in-drive voltage left behind could start the next trip early (on_rpm fires before on_voltage within a poll)
 - No polling pause — every tier records continuously while a trip is active. Idle and ESS auto-stop samples (rpm=0 with the bus alive) are kept on purpose; they're honest data and storage is effectively free. The only guard in `_handle_response` is the active-trip check (`current_trip_id is None` → skip).
 
 ## Threading Model
@@ -96,8 +97,9 @@ will not protect it. INSERTs carry `ON CONFLICT(id) DO NOTHING` (idempotent re-e
 - Units in column names: coolant_temp_c, battery_v, speed_kmh
 - WAL mode enabled: `PRAGMA journal_mode=WAL` — check return value, warn if not "wal"
 - `PRAGMA synchronous=NORMAL` + `PRAGMA cache_size=-8000` on every open
-- `PRAGMA integrity_check` on every open — rename .corrupt and start fresh on failure
+- `PRAGMA integrity_check` at collector boot — rename .corrupt and start fresh on failure. Gated by `get_connection(verify_integrity=...)`: the sync process passes `False` so it doesn't full-scan the DB every 5 min (and can't quarantine the collector's live DB)
 - `synced INTEGER DEFAULT 0` on every table
+- The six high-volume tables carry a **partial** index `idx_<table>_unsynced ON <table>(timestamp) WHERE synced=0` (not a full `(synced)` index — that 2-value column is near-useless). It stays tiny and serves both the sync `WHERE synced=0` SELECT and the LED `MIN(timestamp) WHERE synced=0` backlog check as index-only lookups
 - NULL stored for bad/missing PID responses — never carry forward
 
 ## Persistent Files on USB Drive
@@ -108,7 +110,12 @@ will not protect it. INSERTs carry `ON CONFLICT(id) DO NOTHING` (idempotent re-e
 | `/mnt/usb/data/reconnect_count` | obd_connection.reconnect() | sync (health snapshot) | BT reconnect counter |
 | `/mnt/usb/logs/obd.log` | logger | health.py (tail) | rotating log (5MB × 7) |
 
-Both counter files are `fsync`'d after every write — engine off = immediate power cut.
+Both counter files are written **atomically** — `health._atomic_write()` writes a
+`.tmp` file, `fsync`s it, then `os.replace()`s it onto the target and `fsync`s the
+directory. A power cut (engine off) can never leave a truncated/empty counter that
+the readers would silently reset to 0; a reader always sees the complete old or new
+file. (Plain `open(path,"w")` truncates before writing — that window is the bug this
+avoids.)
 
 ## Sync
 - Fires 5 min after boot via systemd timer, then every 5 min
@@ -116,8 +123,9 @@ Both counter files are `fsync`'d after every write — engine off = immediate po
 - POSTs unsynced rows (`WHERE synced=0`) to Golang API in priority order: obd_1s first, trips last
 - Auth: Bearer token in Authorization header
 - Config: `/etc/obd-collector/config.env` (never committed to git)
-- Marks `synced=1` after successful POST — retries with backoff on `OperationalError`
+- Marks `synced=1` after successful POST — retries with backoff on `OperationalError`; if the local `synced=1` UPDATE never lands (writer holds the lock), the table loop **breaks** rather than re-POSTing the same `synced=0` batch (server `ON CONFLICT DO NOTHING` makes the next run's retry safe)
 - Max 1000 batches per table per run to guard against stuck-loop
+- Opens the DB with `get_connection(verify_integrity=False)` — the per-open full `integrity_check` is skipped in the sync process (it reopens every 5 min); the collector owns integrity management at boot, and sync must not quarantine the live DB
 - Pi health snapshot included in every sync payload (reads reconnect_count from file)
 - Ford tables skipped silently at DEBUG level if they don't exist yet
 
@@ -148,6 +156,10 @@ green*     open trip (end_time IS NULL)                       (* = slow blink)
 blue       sync behind — oldest unsynced OBD row older than LED_SYNC_BEHIND_DAYS (default 10d)
 magenta    DTC within LED_DTC_RECENT_DAYS
 ```
+**Two-rate polling**: the loop runs every `LED_POLL_S` (2s) but only the cheap, fast-changing signals (data freshness → green, active trip → green-blink) are read each tick. The expensive slow-changing signals — `_collector_active()` (forks `systemctl`) and `_is_sync_behind()` (six-table backlog scan) — are refreshed only every `LED_SLOW_POLL_S` (30s) and cached in a `SlowSignals` between fast polls (`read_signals(slow=...)`). This keeps the background daemon off the CPU without losing drive-time responsiveness.
+
+**DB read errors** are caught as `sqlite3.Error` (not just `OperationalError`) so a `DatabaseError` from corruption doesn't propagate and freeze the LEDs at their last colour — the fault must still be able to turn LED A red. Freshness/DTC recency checks require a **non-negative** age (`0 <= age <= window`) so a future-dated timestamp (RTC skew before NTP) can't latch a state on.
+
 All thresholds/pins are in `config.env` (see `config.py` docstring). Verify wiring with `jarvis led test` (stops the daemon, cycles every state, restarts it).
 
 ## Logging
