@@ -260,10 +260,12 @@ def _sync_table(conn: sqlite3.Connection, table: str) -> int:
             # a retry safe, but we must mark them locally to stop re-sending.
             placeholders = ",".join("?" * len(row_ids))
             update_sql = f"UPDATE {table} SET synced=1 WHERE id IN ({placeholders})"
+            marked = False
             for attempt in range(_SYNCED_UPDATE_RETRIES):
                 try:
                     conn.execute(update_sql, row_ids)
                     conn.commit()
+                    marked = True
                     break
                 except sqlite3.OperationalError as lock_err:
                     if attempt < _SYNCED_UPDATE_RETRIES - 1:
@@ -273,6 +275,13 @@ def _sync_table(conn: sqlite3.Connection, table: str) -> int:
                             f"Failed to mark {len(row_ids)} rows synced in '{table}' "
                             f"after {_SYNCED_UPDATE_RETRIES} attempts: {lock_err}"
                         )
+
+            # If the local UPDATE never landed the rows are still synced=0, so the
+            # next SELECT would return the identical batch and re-POST it. Stop now
+            # and let the next sync run retry once the writer releases the lock —
+            # the server's ON CONFLICT(id) DO NOTHING makes the re-POST harmless.
+            if not marked:
+                break
 
             total_synced += len(row_ids)
             logger.info(f"Synced {len(row_ids)} rows from {table} (total: {total_synced})")

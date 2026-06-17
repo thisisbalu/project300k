@@ -145,6 +145,45 @@ class TestSyncTable:
         unsynced = db_conn.execute("SELECT COUNT(*) FROM obd_1s WHERE synced=0").fetchone()[0]
         assert unsynced == 3
 
+    def test_breaks_when_synced_update_permanently_fails(self, db_conn, trip_row, caplog):
+        import logging
+        import sqlite3
+        from sync import _sync_table
+        from config import config
+        # More than one batch available so, without the break, the same rows
+        # would be re-SELECTed and re-POSTed up to _MAX_BATCHES_PER_TABLE times.
+        self._insert_obd_rows(db_conn, trip_row, config.SYNC_BATCH_SIZE * 3)
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status.return_value = None
+
+        # Make the UPDATE always fail (writer holds the lock) but leave SELECT
+        # working. sqlite3.Connection.execute is read-only, so wrap in a proxy.
+        class _Conn:
+            def __init__(self, real):
+                self._real = real
+
+            def execute(self, sql, *args, **kwargs):
+                if sql.lstrip().upper().startswith("UPDATE"):
+                    raise sqlite3.OperationalError("database is locked")
+                return self._real.execute(sql, *args, **kwargs)
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+        proxy = _Conn(db_conn)
+
+        with patch("sync.requests.post", return_value=mock_response) as post, \
+             patch("sync.time.sleep"), \
+             caplog.at_level(logging.ERROR, logger="obd-collector"):
+            count = _sync_table(proxy, "obd_1s")
+
+        # POSTed exactly one batch then stopped — no spinning, no inflated count.
+        assert post.call_count == 1
+        assert count == 0
+        unsynced = db_conn.execute("SELECT COUNT(*) FROM obd_1s WHERE synced=0").fetchone()[0]
+        assert unsynced == config.SYNC_BATCH_SIZE * 3
+
     def test_batch_size_limits_rows_per_post(self, db_conn, trip_row):
         from sync import _sync_table
         from config import config
