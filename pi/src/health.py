@@ -49,6 +49,30 @@ BT_ADAPTER_PATH      = "/sys/class/bluetooth/hci0"
 VERSION_PATH         = "/home/balu/project300k/pi/VERSION"
 
 
+def _atomic_write(path: str, value: str) -> None:
+    """Durably write a small value so a power cut never leaves a partial file.
+
+    open(path, "w") truncates to zero *before* the new bytes land, so a power
+    cut (engine off — the normal shutdown here) in that window leaves an empty
+    or half-written file that the readers silently reset to a default, losing
+    the count. Writing to a temp file, fsync'ing it, then os.replace()'ing it
+    onto the target makes the swap atomic — a reader sees either the old file
+    or the complete new one, never a truncated one. The directory is fsync'd so
+    the rename itself survives the power cut.
+    """
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as f:
+        f.write(value)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
+    dir_fd = os.open(os.path.dirname(path), os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
 def increment_restart_count() -> int:
     """Read, increment, and persist the restart counter.
 
@@ -72,13 +96,7 @@ def increment_restart_count() -> int:
     count += 1
 
     try:
-        with open(RESTART_COUNT_PATH, "w") as f:
-            f.write(str(count))
-            # fsync so the count survives an abrupt power cut (engine off).
-            # Without this, the write may sit in the kernel page cache and be
-            # lost if power is cut before the cache is flushed to the USB drive.
-            f.flush()
-            os.fsync(f.fileno())
+        _atomic_write(RESTART_COUNT_PATH, str(count))
     except OSError as e:
         logger.warning(f"Could not write restart count: {e}")
 
@@ -115,10 +133,7 @@ def write_rtc_ok(ok: int) -> None:
     Write failures are logged but not fatal — rtc_ok is best-effort.
     """
     try:
-        with open(RTC_OK_PATH, "w") as f:
-            f.write(str(ok))
-            f.flush()
-            os.fsync(f.fileno())
+        _atomic_write(RTC_OK_PATH, str(ok))
     except OSError as e:
         logger.warning(f"Could not write rtc_ok: {e}")
 
@@ -166,10 +181,7 @@ def write_reconnect_count(count: int) -> None:
     Write failures are logged but not fatal — the count is best-effort.
     """
     try:
-        with open(RECONNECT_COUNT_PATH, "w") as f:
-            f.write(str(count))
-            f.flush()
-            os.fsync(f.fileno())
+        _atomic_write(RECONNECT_COUNT_PATH, str(count))
     except OSError as e:
         logger.warning(f"Could not write reconnect count: {e}")
 
