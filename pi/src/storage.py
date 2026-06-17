@@ -458,35 +458,42 @@ def _create_indexes(conn: sqlite3.Connection) -> None:
 
     conn.executescript("""
 
+        -- High-volume tables use a PARTIAL index on the unsynced rows only:
+        -- (synced) alone is a 2-value column the planner often ignores, forcing a
+        -- large scan to find the few synced=0 rows. A partial index on
+        -- (timestamp) WHERE synced=0 stays tiny (only unsynced rows) and serves
+        -- both the sync 'WHERE synced=0' SELECT and the LED 'MIN(timestamp)
+        -- WHERE synced=0' backlog check as index-only lookups.
+
         -- obd_1s indexes
         CREATE INDEX IF NOT EXISTS idx_obd_1s_trip_id   ON obd_1s(trip_id);
         CREATE INDEX IF NOT EXISTS idx_obd_1s_timestamp  ON obd_1s(timestamp);
-        CREATE INDEX IF NOT EXISTS idx_obd_1s_synced     ON obd_1s(synced);
+        CREATE INDEX IF NOT EXISTS idx_obd_1s_unsynced   ON obd_1s(timestamp) WHERE synced=0;
 
         -- obd_5s indexes
         CREATE INDEX IF NOT EXISTS idx_obd_5s_trip_id   ON obd_5s(trip_id);
         CREATE INDEX IF NOT EXISTS idx_obd_5s_timestamp  ON obd_5s(timestamp);
-        CREATE INDEX IF NOT EXISTS idx_obd_5s_synced     ON obd_5s(synced);
+        CREATE INDEX IF NOT EXISTS idx_obd_5s_unsynced   ON obd_5s(timestamp) WHERE synced=0;
 
         -- obd_30s indexes
         CREATE INDEX IF NOT EXISTS idx_obd_30s_trip_id   ON obd_30s(trip_id);
         CREATE INDEX IF NOT EXISTS idx_obd_30s_timestamp  ON obd_30s(timestamp);
-        CREATE INDEX IF NOT EXISTS idx_obd_30s_synced     ON obd_30s(synced);
+        CREATE INDEX IF NOT EXISTS idx_obd_30s_unsynced   ON obd_30s(timestamp) WHERE synced=0;
 
         -- ford_obd_5s indexes
         CREATE INDEX IF NOT EXISTS idx_ford_obd_5s_trip_id   ON ford_obd_5s(trip_id);
         CREATE INDEX IF NOT EXISTS idx_ford_obd_5s_timestamp  ON ford_obd_5s(timestamp);
-        CREATE INDEX IF NOT EXISTS idx_ford_obd_5s_synced     ON ford_obd_5s(synced);
+        CREATE INDEX IF NOT EXISTS idx_ford_obd_5s_unsynced   ON ford_obd_5s(timestamp) WHERE synced=0;
 
         -- ford_obd_10s indexes
         CREATE INDEX IF NOT EXISTS idx_ford_obd_10s_trip_id   ON ford_obd_10s(trip_id);
         CREATE INDEX IF NOT EXISTS idx_ford_obd_10s_timestamp  ON ford_obd_10s(timestamp);
-        CREATE INDEX IF NOT EXISTS idx_ford_obd_10s_synced     ON ford_obd_10s(synced);
+        CREATE INDEX IF NOT EXISTS idx_ford_obd_10s_unsynced   ON ford_obd_10s(timestamp) WHERE synced=0;
 
         -- ford_obd_20s indexes
         CREATE INDEX IF NOT EXISTS idx_ford_obd_20s_trip_id   ON ford_obd_20s(trip_id);
         CREATE INDEX IF NOT EXISTS idx_ford_obd_20s_timestamp  ON ford_obd_20s(timestamp);
-        CREATE INDEX IF NOT EXISTS idx_ford_obd_20s_synced     ON ford_obd_20s(synced);
+        CREATE INDEX IF NOT EXISTS idx_ford_obd_20s_unsynced   ON ford_obd_20s(timestamp) WHERE synced=0;
 
         -- dtc_events indexes
         CREATE INDEX IF NOT EXISTS idx_dtc_events_trip_id   ON dtc_events(trip_id);

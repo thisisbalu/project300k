@@ -215,12 +215,12 @@ class TestInitSchema:
     }
 
     EXPECTED_INDEXES = {
-        "idx_obd_1s_trip_id", "idx_obd_1s_timestamp", "idx_obd_1s_synced",
-        "idx_obd_5s_trip_id", "idx_obd_5s_timestamp", "idx_obd_5s_synced",
-        "idx_obd_30s_trip_id", "idx_obd_30s_timestamp", "idx_obd_30s_synced",
-        "idx_ford_obd_5s_trip_id", "idx_ford_obd_5s_timestamp", "idx_ford_obd_5s_synced",
-        "idx_ford_obd_10s_trip_id", "idx_ford_obd_10s_timestamp", "idx_ford_obd_10s_synced",
-        "idx_ford_obd_20s_trip_id", "idx_ford_obd_20s_timestamp", "idx_ford_obd_20s_synced",
+        "idx_obd_1s_trip_id", "idx_obd_1s_timestamp", "idx_obd_1s_unsynced",
+        "idx_obd_5s_trip_id", "idx_obd_5s_timestamp", "idx_obd_5s_unsynced",
+        "idx_obd_30s_trip_id", "idx_obd_30s_timestamp", "idx_obd_30s_unsynced",
+        "idx_ford_obd_5s_trip_id", "idx_ford_obd_5s_timestamp", "idx_ford_obd_5s_unsynced",
+        "idx_ford_obd_10s_trip_id", "idx_ford_obd_10s_timestamp", "idx_ford_obd_10s_unsynced",
+        "idx_ford_obd_20s_trip_id", "idx_ford_obd_20s_timestamp", "idx_ford_obd_20s_unsynced",
         "idx_dtc_events_trip_id", "idx_dtc_events_timestamp",
         "idx_dtc_events_synced", "idx_dtc_events_code",
         "idx_trips_start_time", "idx_trips_synced",

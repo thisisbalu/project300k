@@ -18,7 +18,8 @@ Optional values (defaults shown):
 
 Status LED values (defaults shown) — consumed by led_status.py only:
     LED_ENABLED          — true
-    LED_POLL_S           — 2.0   (status evaluation interval)
+    LED_POLL_S           — 2.0   (fast status interval — data freshness + trip)
+    LED_SLOW_POLL_S      — 30.0  (slow interval — systemd state + sync backlog)
     LED_DATA_STALE_S     — 6.0   (obd_1s older than this => OBD not flowing)
     LED_SYNC_BEHIND_DAYS — 10.0  (oldest unsynced row older than this => LED B blue)
     LED_DTC_RECENT_DAYS  — 7.0   (a DTC newer than this => LED B magenta)
@@ -79,6 +80,7 @@ class Config:
     LOG_PATH: str
     LED_ENABLED: bool
     LED_POLL_S: float
+    LED_SLOW_POLL_S: float
     LED_DATA_STALE_S: float
     LED_SYNC_BEHIND_DAYS: float
     LED_DTC_RECENT_DAYS: float
@@ -180,6 +182,7 @@ def _load() -> Config:
         LOG_PATH=os.environ.get("LOG_PATH", "/mnt/usb/logs/obd.log"),
         LED_ENABLED=_env_bool("LED_ENABLED", True),
         LED_POLL_S=_env_float("LED_POLL_S", 2.0),
+        LED_SLOW_POLL_S=_env_float("LED_SLOW_POLL_S", 30.0),
         LED_DATA_STALE_S=_env_float("LED_DATA_STALE_S", 6.0),
         LED_SYNC_BEHIND_DAYS=_env_float("LED_SYNC_BEHIND_DAYS", 10.0),
         LED_DTC_RECENT_DAYS=_env_float("LED_DTC_RECENT_DAYS", 7.0),

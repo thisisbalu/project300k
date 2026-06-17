@@ -340,6 +340,27 @@ def test_read_signals_with_db(monkeypatch, tmp_path):
     assert not s.sync_behind and not s.dtc_present
 
 
+def test_read_signals_reuses_cached_slow_signals(monkeypatch):
+    # When a SlowSignals cache is passed, the expensive collector/ sync-behind
+    # reads must be skipped and the cached values reused.
+    collector_calls = []
+    sync_behind_calls = []
+    monkeypatch.setattr(led.health, "_check_usb_mounted", lambda: 0)
+    monkeypatch.setattr(led.health, "_check_bt_adapter", lambda: 1)
+    monkeypatch.setattr(led, "_pi_warning", lambda usb_mounted: False)
+    monkeypatch.setattr(led, "_collector_active",
+                        lambda: collector_calls.append(1) or True)
+    monkeypatch.setattr(led, "_is_sync_behind",
+                        lambda *a: sync_behind_calls.append(1) or True)
+
+    cache = led.SlowSignals(collector_active=True, sync_behind=True)
+    s = led.read_signals(cache)
+
+    assert s.collector_active is True and s.sync_behind is True
+    assert collector_calls == []      # systemctl fork skipped
+    assert sync_behind_calls == []    # backlog scan skipped
+
+
 def test_read_signals_usb_unmounted_skips_db(monkeypatch):
     monkeypatch.setattr(led.health, "_check_usb_mounted", lambda: 0)
     monkeypatch.setattr(led.health, "_check_bt_adapter", lambda: 0)
@@ -436,7 +457,7 @@ def test_test_cycle_ends_on_blue(fake_gpiozero, monkeypatch):
 # ── LedStatus loop ────────────────────────────────────────────────────────────
 
 def test_ledstatus_applies_then_stops(monkeypatch):
-    monkeypatch.setattr(led, "read_signals", lambda: _signals())
+    monkeypatch.setattr(led, "read_signals", lambda slow=None: _signals())
     recorded = []
     app = None
 
@@ -451,7 +472,7 @@ def test_ledstatus_applies_then_stops(monkeypatch):
 
 
 def test_ledstatus_survives_read_error(monkeypatch):
-    def boom():
+    def boom(slow=None):
         raise RuntimeError("transient")
     monkeypatch.setattr(led, "read_signals", boom)
 

@@ -263,12 +263,32 @@ def _pi_warning(usb_mounted: bool) -> bool:
     return False
 
 
-def read_signals() -> Signals:
-    """Gather the current status snapshot from systemd, sysfs, and the DB."""
+@dataclass(frozen=True)
+class SlowSignals:
+    """The signals refreshed on the slow sub-interval, not every fast poll.
+
+    `collector_active` forks a `systemctl` subprocess and `sync_behind` scans
+    the unsynced backlog across six tables — both expensive and slow-changing,
+    so they're recomputed every LED_SLOW_POLL_S and cached between fast polls.
+    """
+
+    collector_active: bool
+    sync_behind: bool
+
+
+def read_signals(slow: SlowSignals | None = None) -> Signals:
+    """Gather the current status snapshot from systemd, sysfs, and the DB.
+
+    The fast signals (data freshness, active trip) are always read so the LEDs
+    stay responsive while driving. The expensive slow signals are read here only
+    when `slow` is None (a full poll); otherwise the cached values in `slow` are
+    reused, skipping the systemctl fork and the six-table backlog scan.
+    """
     usb_mounted = bool(health._check_usb_mounted())
     now = datetime.now(timezone.utc)
 
-    data_fresh = trip_active = sync_behind = dtc_present = False
+    data_fresh = trip_active = dtc_present = False
+    sync_behind = slow.sync_behind if slow else False
     # Only open the DB when the drive is mounted AND the file exists — otherwise
     # sqlite3.connect would create a stray empty DB on the SD card root.
     if usb_mounted and os.path.exists(config.DB_PATH):
@@ -278,12 +298,15 @@ def read_signals() -> Signals:
                 data_fresh = _data_fresh(conn, now)
                 trip_active = _has_open_trip(conn)
                 dtc_present = _has_recent_dtc(conn, now)
-                sync_behind = _is_sync_behind(conn, now)
+                if slow is None:
+                    sync_behind = _is_sync_behind(conn, now)
             finally:
                 conn.close()
 
+    collector_active = slow.collector_active if slow else _collector_active()
+
     return Signals(
-        collector_active=_collector_active(),
+        collector_active=collector_active,
         usb_mounted=usb_mounted,
         bt_adapter_present=bool(health._check_bt_adapter()),
         data_fresh=data_fresh,
@@ -359,10 +382,20 @@ class LedStatus:
         self._stop.set()
 
     def run(self) -> None:
+        slow: SlowSignals | None = None
+        last_slow = 0.0
         while not self._stop.is_set():
             try:
-                led_a, led_b = evaluate_state(read_signals())
-                self._driver.apply(led_a, led_b)
+                now_mono = time.monotonic()
+                # Refresh the expensive slow signals (systemd fork + backlog scan)
+                # only every LED_SLOW_POLL_S; reuse the cache on fast polls so the
+                # 2s loop only does the cheap data-freshness/trip reads.
+                refresh = slow is None or (now_mono - last_slow) >= config.LED_SLOW_POLL_S
+                signals = read_signals(None if refresh else slow)
+                if refresh:
+                    slow = SlowSignals(signals.collector_active, signals.sync_behind)
+                    last_slow = now_mono
+                self._driver.apply(*evaluate_state(signals))
             except Exception as e:  # never let a transient read error kill the daemon
                 logger.error(f"LED status loop error: {e}")
             self._stop.wait(config.LED_POLL_S)
