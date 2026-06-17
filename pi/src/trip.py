@@ -286,6 +286,10 @@ class TripManager:
             name=f"dtc-scan-{scan_trigger}",
         )
         with self._dtc_threads_lock:
+            # Drop already-finished scans so the list doesn't grow unbounded over
+            # a months-long process — it only needs the still-running threads that
+            # stop() must join before the connection closes.
+            self._dtc_threads = [d for d in self._dtc_threads if d.is_alive()]
             self._dtc_threads.append(t)
         t.start()
 

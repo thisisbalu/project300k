@@ -358,6 +358,20 @@ class TestDispatchDtcScan:
             tm._dispatch_dtc_scan("fake-trip-id", "trip_start")
         assert started.is_set()
 
+    def test_finished_threads_are_pruned(self, tm):
+        """The thread list must not grow unbounded across many trip boundaries."""
+        for _ in range(20):
+            with patch.object(tm, "_scan_dtc", side_effect=lambda *a: None):
+                tm._dispatch_dtc_scan("fake-id", "trip_end")
+        # Let the (instant) scans finish, then dispatch once more to trigger prune.
+        for t in list(tm._dtc_threads):
+            t.join(timeout=1)
+        with patch.object(tm, "_scan_dtc", side_effect=lambda *a: None):
+            tm._dispatch_dtc_scan("fake-id", "trip_end")
+        # All earlier threads finished, so only the just-dispatched one remains
+        # (plus any not-yet-finished, which is at most itself).
+        assert len(tm._dtc_threads) <= 2
+
     def test_scan_skipped_when_dtc_query_not_wired(self, tm, caplog):
         import logging
         # _dtc_query_fn defaults to None — scan is skipped before collector is wired
