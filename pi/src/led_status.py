@@ -190,7 +190,13 @@ def _data_fresh(conn: sqlite3.Connection, now: datetime) -> bool:
     except sqlite3.Error:
         return False
     ts = _parse_ts(row[0]) if row else None
-    return ts is not None and (now - ts).total_seconds() <= config.LED_DATA_STALE_S
+    if ts is None:
+        return False
+    # Require a non-negative age: a future-dated timestamp (RTC skew corrected
+    # by NTP after the row was written) would otherwise satisfy the upper bound
+    # and falsely read as fresh.
+    age_s = (now - ts).total_seconds()
+    return 0 <= age_s <= config.LED_DATA_STALE_S
 
 
 def _has_open_trip(conn: sqlite3.Connection) -> bool:
@@ -211,7 +217,13 @@ def _has_recent_dtc(conn: sqlite3.Connection, now: datetime) -> bool:
     except sqlite3.Error:
         return False
     ts = _parse_ts(row[0]) if row else None
-    return ts is not None and (now - ts).total_seconds() <= config.LED_DTC_RECENT_DAYS * 86400
+    if ts is None:
+        return False
+    # Require a non-negative age so a future-dated DTC row (RTC skew) cannot
+    # latch LED B magenta permanently — a negative delta would otherwise pass
+    # the upper-bound-only check until wall-clock time caught up to it.
+    age_s = (now - ts).total_seconds()
+    return 0 <= age_s <= config.LED_DTC_RECENT_DAYS * 86400
 
 
 def _is_sync_behind(conn: sqlite3.Connection, now: datetime) -> bool:

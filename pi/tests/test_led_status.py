@@ -178,6 +178,13 @@ def test_data_fresh_empty_table(db_conn):
     assert led._data_fresh(db_conn, _now()) is False
 
 
+def test_data_fresh_future_timestamp_not_fresh(db_conn, trip_row):
+    # A future-dated row (RTC skew corrected by NTP) must not read as fresh.
+    now = _now()
+    _insert_obd_1s(db_conn, trip_row, (now + timedelta(hours=2)).isoformat())
+    assert led._data_fresh(db_conn, now) is False
+
+
 def test_has_open_trip_true(db_conn, trip_row):
     # trip_row inserts a trip with end_time NULL
     assert led._has_open_trip(db_conn) is True
@@ -206,6 +213,13 @@ def test_has_recent_dtc_old(db_conn, trip_row):
 
 def test_has_recent_dtc_none(db_conn):
     assert led._has_recent_dtc(db_conn, _now()) is False
+
+
+def test_has_recent_dtc_future_timestamp_not_recent(db_conn, trip_row):
+    # A future-dated DTC (RTC skew) must not latch LED B magenta permanently.
+    now = _now()
+    _insert_dtc(db_conn, trip_row, (now + timedelta(days=2)).isoformat())
+    assert led._has_recent_dtc(db_conn, now) is False
 
 
 def test_sync_behind_old_unsynced(db_conn, trip_row):
