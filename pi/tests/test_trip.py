@@ -207,6 +207,30 @@ class TestTripEnd:
         args = mock_end.call_args[0]
         assert args[1] == trip_id
 
+    def test_trip_end_resets_stale_voltage(self, tm):
+        trip_id = self._start_trip(tm)
+        assert trip_id is not None
+
+        with patch("trip.time.monotonic") as mock_mono, \
+             patch("trip.update_trip_end"), \
+             patch.object(tm, "_dispatch_dtc_scan"):
+            mock_mono.return_value = 100.0
+            tm.on_voltage(_voltage_response(12.0))
+            tm.on_rpm(_rpm_response(0))
+            mock_mono.return_value = 131.0
+            tm.on_rpm(_rpm_response(0))
+
+        assert tm.current_trip_id is None
+        # Voltage state must not persist across the trip boundary.
+        assert tm._last_voltage is None
+        assert tm._last_voltage_mono is None
+
+        # A new RPM>0 callback arriving before any fresh voltage must NOT start a
+        # trip — the stale 12.0V/13.8V from the prior session is gone.
+        with patch("trip.get_trip_number", return_value=2):
+            tm.on_rpm(_rpm_response(1000))
+        assert tm.current_trip_id is None
+
     def test_trip_not_ended_when_only_rpm0_without_voltage_drop(self, tm):
         self._start_trip(tm)
 

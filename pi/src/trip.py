@@ -252,6 +252,14 @@ class TripManager:
         logger.info(f"Trip ended: {trip_id}")
         self.current_trip_id = None
 
+        # Drop the last voltage reading from this trip. TripManager is long-lived
+        # across key-off, so a stale in-drive value (~13.8V) left here would let
+        # the next key-on start a trip on cross-session data before a fresh
+        # reading arrives — on_rpm fires before on_voltage within a poll. Reset
+        # to None so trip-start/end use only voltage observed in the new session.
+        self._last_voltage = None
+        self._last_voltage_mono = None
+
         # DTC scan dispatched to a background thread — see _scan_dtc() note.
         self._dispatch_dtc_scan(trip_id, "trip_end")
 
