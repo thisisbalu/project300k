@@ -55,6 +55,12 @@ else
     echo "    Config already exists — skipping"
 fi
 
+# config.env holds the API bearer token — lock it to owner-only so other local
+# users/processes cannot read the secret. `sudo tee` creates it world-readable
+# (root umask 022 → 0644); enforce 0600 and balu ownership every run (idempotent).
+sudo chown balu:balu "$CONFIG_DIR/config.env"
+sudo chmod 600 "$CONFIG_DIR/config.env"
+
 echo "==> Checking VERSION file"
 if [ ! -f "$PI_DIR/VERSION" ]; then
     echo "1.0.0" > "$PI_DIR/VERSION"
@@ -94,8 +100,10 @@ sudo systemctl daemon-reload
 sudo systemctl enable rfcomm-connect.service
 sudo systemctl enable obd-collector.service
 sudo systemctl enable obd-sync.timer
-sudo systemctl enable obd-datasette.service
 sudo systemctl enable obd-led.service
+# obd-datasette is deliberately NOT enabled — it is on-demand only (started via
+# `jarvis datasette start`). It serves the full DB read-only and binds localhost,
+# so leaving it off at boot avoids running an unneeded listener 24/7.
 
 echo ""
 echo "Install complete."

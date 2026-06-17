@@ -276,6 +276,71 @@ class TestWriteFailing:
 
 
 # ---------------------------------------------------------------------------
+# _track_table_failures — one table losing every row while the batch commits
+# ---------------------------------------------------------------------------
+
+class TestTableFailureStreak:
+    def _good_obd_1s(self, trip_id):
+        import uuid
+        return {
+            "id": str(uuid.uuid4()),
+            "trip_id": trip_id,
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "rpm": 1000,
+            "synced": 0,
+        }
+
+    def _bad_row(self):
+        import uuid
+        return {"id": str(uuid.uuid4()), "nonexistent_col": "x"}
+
+    def test_warns_when_one_table_loses_every_row(self, db_conn, trip_row, caplog):
+        import logging
+        from queue_writer import QueueWriter, TABLE_FAILURE_WARN_STREAK
+        w = QueueWriter(db_conn)
+        # obd_5s rows always fail (bad column) while obd_1s commits cleanly, so
+        # the batch commits and write_failing never trips — the per-table guard
+        # is the only thing that can surface the loss.
+        with caplog.at_level(logging.ERROR, logger="obd-collector"):
+            for _ in range(TABLE_FAILURE_WARN_STREAK):
+                w._flush([
+                    ("obd_5s", self._bad_row()),
+                    ("obd_1s", self._good_obd_1s(trip_row)),
+                ])
+        assert "obd_5s" in caplog.text
+        assert "silently discarding" in caplog.text
+        assert w.write_failing is False
+        assert w._table_fail_streak["obd_1s"] == 0
+
+    def test_no_warning_below_threshold(self, db_conn, trip_row, caplog):
+        import logging
+        from queue_writer import QueueWriter, TABLE_FAILURE_WARN_STREAK
+        w = QueueWriter(db_conn)
+        with caplog.at_level(logging.ERROR, logger="obd-collector"):
+            for _ in range(TABLE_FAILURE_WARN_STREAK - 1):
+                w._flush([("obd_5s", self._bad_row())])
+        assert "silently discarding" not in caplog.text
+        assert w._table_fail_streak["obd_5s"] == TABLE_FAILURE_WARN_STREAK - 1
+
+    def test_recovering_table_resets_streak(self, db_conn, trip_row):
+        from queue_writer import QueueWriter, TABLE_FAILURE_WARN_STREAK
+        w = QueueWriter(db_conn)
+        for _ in range(TABLE_FAILURE_WARN_STREAK - 1):
+            w._flush([("obd_5s", self._bad_row())])
+        # A clean obd_5s row commits — the streak must reset to 0.
+        import uuid
+        good_5s = {
+            "id": str(uuid.uuid4()),
+            "trip_id": trip_row,
+            "timestamp": "2026-01-01T00:00:00+00:00",
+            "coolant_temp_c": 90.0,
+            "synced": 0,
+        }
+        w._flush([("obd_5s", good_5s)])
+        assert w._table_fail_streak["obd_5s"] == 0
+
+
+# ---------------------------------------------------------------------------
 # _insert() — builds correct parameterised SQL
 # ---------------------------------------------------------------------------
 

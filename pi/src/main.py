@@ -21,6 +21,7 @@ Shutdown (SIGTERM or KeyboardInterrupt):
     before the SQLite connection is closed so no in-flight rows are lost.
 """
 
+import os
 import signal
 import sys
 import time
@@ -40,6 +41,44 @@ from trip import TripManager
 # When dtoverlay=i2c-rtc,ds3231 is active the kernel rtc-ds1307 driver claims
 # the I2C address — direct smbus2 access is blocked. Check via sysfs instead.
 _RTC_NAME_PATH = "/sys/class/rtc/rtc0/name"
+
+# The SQLite DB, rotating log, and persistent counters all live on /mnt/usb.
+USB_MOUNT_PATH      = "/mnt/usb"
+USB_MOUNT_TIMEOUT_S = 120
+USB_MOUNT_POLL_S    = 3
+
+
+def wait_for_usb_mount(timeout_s: int = USB_MOUNT_TIMEOUT_S) -> bool:
+    """Block until the USB data drive is mounted, up to timeout_s.
+
+    The DB, log, and counter files all live on /mnt/usb. At boot the drive can
+    take several seconds to enumerate and mount after the kernel sees it. Opening
+    the DB before the mount lands raises, main() exits, and systemd restarts —
+    and five such failures inside StartLimitIntervalSec trip the start limit and
+    stop the service for good, leaving the collector down until a manual start.
+
+    Polling here turns a slow mount into a tolerated delay (well within the
+    service's TimeoutStartSec=300). If the drive never appears, returning False
+    lets main() exit cleanly; because this waited timeout_s first, restart
+    attempts are spaced far enough apart that the start limit is never reached.
+
+    Returns:
+        True if /mnt/usb is mounted, False if it did not appear within timeout_s.
+    """
+    deadline = time.monotonic() + timeout_s
+    waited = False
+    while not os.path.ismount(USB_MOUNT_PATH):
+        if time.monotonic() >= deadline:
+            return False
+        if not waited:
+            logger.warning(
+                f"USB drive not mounted at {USB_MOUNT_PATH} — waiting up to {timeout_s}s"
+            )
+            waited = True
+        time.sleep(USB_MOUNT_POLL_S)
+    if waited:
+        logger.warning(f"USB drive now mounted at {USB_MOUNT_PATH} — continuing boot")
+    return True
 
 
 def check_rtc() -> int:
@@ -128,6 +167,17 @@ def main() -> None:
     # Register SIGTERM handler before anything else — systemd sends SIGTERM
     # to stop the service and we must drain the queue and close SQLite cleanly.
     signal.signal(signal.SIGTERM, _handle_sigterm)
+
+    # Wait for the USB drive before touching it — the DB, log, and counter files
+    # all live on /mnt/usb, and at boot the drive can lag the service start.
+    # Exiting here (rather than crashing in get_connection) keeps restarts spaced
+    # out so the systemd start limit is never tripped by a slow-mounting drive.
+    if not wait_for_usb_mount():
+        logger.error(
+            f"USB drive did not mount within {USB_MOUNT_TIMEOUT_S}s — "
+            "exiting for systemd restart"
+        )
+        sys.exit(1)
 
     # Attach the rotating USB file handler (collector-only) before anything logs.
     init_file_logging()

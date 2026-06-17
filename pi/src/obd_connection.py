@@ -114,6 +114,11 @@ class OBDConnection:
     """
 
     def __init__(self) -> None:
+        # This class only *verifies* the dongle is reachable then releases the
+        # port — the single live connection is the obd.Async owned by Collector.
+        # _connection is therefore transient (set during connect(), nulled before
+        # return) and is never a long-lived handle. reconnect_count is the only
+        # state that outlives a connect() call.
         self._connection: obd.OBD | None = None
         self.reconnect_count: int = 0
 
@@ -193,13 +198,3 @@ class OBDConnection:
                 logger.warning(f"Error closing OBD connection: {e}")
             finally:
                 self._connection = None
-
-    @property
-    def is_connected(self) -> bool:
-        """Return True if the OBD connection is currently active."""
-        return self._connection is not None and self._connection.is_connected()
-
-    @property
-    def connection(self) -> obd.OBD | None:
-        """Return the underlying python-obd connection object."""
-        return self._connection

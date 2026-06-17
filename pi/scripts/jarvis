@@ -428,7 +428,7 @@ case "$cmd" in
         echo ""
         echo -e "${BOLD}Datasette${RESET}"
         echo "  jarvis datasette         Status of Datasette service"
-        echo "  jarvis datasette start   Start Datasette (browse at :8001)"
+        echo "  jarvis datasette start   Start Datasette (localhost:8001 — SSH-tunnel to browse)"
         echo "  jarvis datasette stop    Stop Datasette"
         echo ""
         echo -e "${BOLD}Status LEDs${RESET}"

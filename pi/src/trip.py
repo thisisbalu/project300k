@@ -77,15 +77,15 @@ class TripManager:
                          Read by Collector callbacks — protected by _lock.
     """
 
-    def __init__(self, queue_writer, obd_connection=None) -> None:
+    def __init__(self, queue_writer) -> None:
         """Initialise with dependencies needed for writes and DTC scans.
 
         Args:
             queue_writer:   QueueWriter for persisting trip rows and
                             issuing the trip-end UPDATE via direct_execute().
-            obd_connection: Unused — kept for backward compatibility only.
-                            DTC queries now go through _dtc_query_fn wired
-                            via set_dtc_query() after Collector is created.
+
+        DTC queries are issued through _dtc_query_fn, wired via set_dtc_query()
+        after Collector is created in main.py (Collector owns the OBD link).
         """
         self._queue_writer = queue_writer
         # _dtc_query_fn is wired after Collector is created in main.py via

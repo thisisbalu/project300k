@@ -91,6 +91,13 @@ or `QueueWriter.direct_query()` (locked read, e.g. `get_trip_number` on the call
 thread). Never call `conn.execute()` directly from outside QueueWriter — `_db_lock`
 will not protect it. INSERTs carry `ON CONFLICT(id) DO NOTHING` (idempotent re-enqueue).
 
+`write_failing` only trips when the **whole** batch is unwritable (commit threw, or
+every row failed). A single table whose rows all fail while others commit (a column
+or routing bug) would otherwise bleed silently, so `QueueWriter._track_table_failures`
+tracks a per-table failure streak and logs a loud ERROR after
+`TABLE_FAILURE_WARN_STREAK` (5) consecutive all-fail flushes for that table — the loss
+then surfaces in the log and, via `last_error`, in the health snapshot.
+
 ## SQLite Schema Principles
 - UUID primary keys (TEXT in SQLite)
 - ISO8601 timestamps as TEXT
@@ -127,6 +134,8 @@ avoids.)
 - Max 1000 batches per table per run to guard against stuck-loop
 - Opens the DB with `get_connection(verify_integrity=False)` — the per-open full `integrity_check` is skipped in the sync process (it reopens every 5 min); the collector owns integrity management at boot, and sync must not quarantine the live DB
 - Pi health snapshot included in every sync payload (reads reconnect_count from file)
+- `cpu_usage_pct` uses `psutil.cpu_percent(interval=0.2)` — a short **blocking** sample. `interval=None` is wrong here: sync is a one-shot process, so "usage since last call" has no prior sample and returns 0.0 every run. Same trap in any short-lived process.
+- `config.env` is created `chmod 600` by `install.sh` (it holds the API bearer token); `.env` values may be quoted — `config.py` strips one layer of matching surrounding quotes
 - Ford tables skipped silently at DEBUG level if they don't exist yet
 
 ## Status LEDs (`led_status.py`)
@@ -189,9 +198,19 @@ Do NOT log: individual PID values, every poll cycle, WAL checkpoints, per-tick w
 - `obd-collector.service` — Type=notify, Restart=always, RestartSec=15, WatchdogSec=60
   - `TimeoutStartSec=300` — OBD init can take multiple retry cycles
   - `TimeoutStopSec=60` — covers 30s OBD timeout + 15s queue drain before SIGKILL
+  - `StartLimitBurst`/`StartLimitIntervalSec` live in **`[Unit]`**, not `[Service]` — systemd ≥v230 silently ignores them in `[Service]` (defeating the crash-loop guard)
 - `obd-sync.service` — Type=oneshot, TimeoutStartSec=120
 - `obd-sync.timer` — OnBootSec=5min, OnUnitActiveSec=5min
 - `obd-led.service` — Type=simple, Restart=always, RestartSec=10, `SupplementaryGroups=gpio`; runs `led_status.py`
+
+**Hardening** (`obd-collector` + `obd-led`): `NoNewPrivileges`, `PrivateTmp`,
+`ProtectSystem=strict`, `ProtectHome=read-only`, `ReadWritePaths=/mnt/usb`,
+`ProtectControlGroups`, `ProtectKernelTunables`, `RestrictSUIDSGID`.
+**`ReadWritePaths=/mnt/usb` is mandatory, not optional** — SQLite WAL needs
+read-write access to the DB and its `-wal`/`-shm` sidecars, and a WAL *reader*
+(the LED daemon) must open `-shm` read-write to map shared memory. Dropping it
+breaks DB access on both units. GPIO (`/dev/gpiochip0`) and BT (`/dev/rfcomm0`)
+are under `/dev`, which `ProtectSystem` does not cover, so they keep working.
 
 ## Shutdown Sequence (main.py finally block)
 ```

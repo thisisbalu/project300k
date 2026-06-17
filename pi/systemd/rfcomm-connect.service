@@ -2,17 +2,18 @@
 #
 # Establishes and maintains the Bluetooth RFCOMM connection to the OBDLink MX+.
 # Runs rfcomm connect which blocks for the lifetime of the connection — systemd
-# treats this as a persistent service. If the connection drops, Restart=on-failure
+# treats this as a persistent service. If the connection drops, Restart=always
 # reconnects automatically.
 #
-# obd-collector.service depends on this service via After= and Requires= so the
-# collector never starts without an active rfcomm0 connection.
+# obd-collector.service orders after this unit (After=) and pulls it in with a
+# soft Wants= — NOT Requires= — so the collector still starts (and retries the
+# OBD link itself) even if this binding fails on the first attempt at boot.
 
 [Unit]
 Description=RFCOMM connection to OBDLink MX+
 After=bluetooth.target
+# Hard dependency on the BT stack — rfcomm cannot bind without bluetoothd.
 Requires=bluetooth.service
-# Restart this service if obd-collector fails — the connection may be the cause.
 
 [Service]
 Type=simple

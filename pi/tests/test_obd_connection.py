@@ -18,8 +18,6 @@ def obd_conn():
 def test_initial_state(obd_conn):
     assert obd_conn._connection is None
     assert obd_conn.reconnect_count == 0
-    assert obd_conn.is_connected is False
-    assert obd_conn.connection is None
 
 
 # ---------------------------------------------------------------------------
@@ -147,26 +145,3 @@ class TestReconnect:
              patch.object(obd_conn, "connect", side_effect=lambda: calls.append("connect")):
             obd_conn.reconnect()
         assert calls == ["disconnect", "connect"]
-
-
-# ---------------------------------------------------------------------------
-# Properties
-# ---------------------------------------------------------------------------
-
-class TestProperties:
-    def test_is_connected_true_when_connection_active(self, obd_conn):
-        mock_obd = MagicMock()
-        mock_obd.is_connected.return_value = True
-        obd_conn._connection = mock_obd
-        assert obd_conn.is_connected is True
-
-    def test_is_connected_false_when_connection_returns_false(self, obd_conn):
-        mock_obd = MagicMock()
-        mock_obd.is_connected.return_value = False
-        obd_conn._connection = mock_obd
-        assert obd_conn.is_connected is False
-
-    def test_connection_property_returns_underlying_object(self, obd_conn):
-        mock_obd = MagicMock()
-        obd_conn._connection = mock_obd
-        assert obd_conn.connection is mock_obd

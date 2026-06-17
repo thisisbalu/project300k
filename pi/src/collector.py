@@ -283,18 +283,35 @@ class Collector:
             # getting pinged).
             if self._stop_event.is_set():
                 break
-            logger.warning("Async OBD connection down — reconnecting")
-            try:
-                if conn is not None:
-                    conn.stop()
-                self._async_conn = None
-                # reconnect() increments reconnect_count and writes it to disk
-                # so the sync script can include the live count.
-                self._obd_connection.reconnect()
-                self._connect_and_watch()
-                logger.info("Async OBD connection restored")
-            except Exception as e:
-                logger.error(f"Async OBD reconnect failed: {e} — will retry in 10s")
+
+            # Serialise the swap with query_sync() via _dtc_lock. A DTC scan
+            # temporarily stops the async loop and runs a synchronous query on a
+            # snapshot of _async_conn; without this lock a concurrent reconnect
+            # could null and replace _async_conn underneath that scan, leaving
+            # two obd.Async instances bound to /dev/rfcomm0 (or leaking the old
+            # port). Re-check connection state under the lock: a query_sync()
+            # that just restarted the loop, or a prior iteration, may have
+            # already restored it. is_connected() reflects port status, so a
+            # scan mid-query (loop stopped, port open) reads as connected and is
+            # correctly left alone.
+            with self._dtc_lock:
+                conn = self._async_conn
+                if conn is not None and conn.is_connected():
+                    continue
+                if self._stop_event.is_set():
+                    break
+                logger.warning("Async OBD connection down — reconnecting")
+                try:
+                    if conn is not None:
+                        conn.stop()
+                    self._async_conn = None
+                    # reconnect() increments reconnect_count and writes it to disk
+                    # so the sync script can include the live count.
+                    self._obd_connection.reconnect()
+                    self._connect_and_watch()
+                    logger.info("Async OBD connection restored")
+                except Exception as e:
+                    logger.error(f"Async OBD reconnect failed: {e} — will retry in 10s")
 
     def polling_health(self, window_s: int = 300) -> tuple[int, int]:
         """Return (active_pids, total_pids) for the given look-back window.

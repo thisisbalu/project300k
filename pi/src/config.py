@@ -131,6 +131,13 @@ def _load() -> Config:
                 if line and not line.startswith("#") and "=" in line:
                     key, _, value = line.partition("=")
                     key = key.strip()
+                    value = value.strip()
+                    # Strip one layer of matching surrounding quotes so a value
+                    # written API_KEY="abc" doesn't carry the quotes into the
+                    # token. Most .env consumers do this; matching the convention
+                    # avoids a silent auth failure from a copy-pasted quoted key.
+                    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                        value = value[1:-1]
                     # setdefault only sets if not already in environment.
                     # Log which source wins so an operator editing the file
                     # while an env var is set understands why their change
@@ -141,7 +148,7 @@ def _load() -> Config:
                             file=sys.stderr,
                         )
                     else:
-                        os.environ[key] = value.strip()
+                        os.environ[key] = value
     else:
         print(
             f"WARNING | Config file not found at {CONFIG_PATH}, relying on environment variables",

@@ -396,3 +396,33 @@ class TestCollect:
         assert result["obd_reconnect_count"] == 7
         assert result["restart_count"] == 3
         assert result["rtc_ok"] == 1
+
+    def test_cpu_percent_uses_blocking_interval(self, tmp_path):
+        """cpu_percent must take a short BLOCKING sample, never interval=None.
+
+        collect() runs only in the one-shot sync process, which lives for a
+        single call. interval=None ("usage since last call") would have no prior
+        sample and return 0.0 every run, making cpu_usage_pct a dead metric. Guard
+        that it is called with a positive interval so the regression can't return.
+        """
+        from health import collect
+        log_file = tmp_path / "obd.log"
+        log_file.write_text("")
+        mem = MagicMock()
+        mem.available = 256 * 1024 * 1024
+        from config import config
+        with patch("psutil.virtual_memory", return_value=mem), \
+             patch("psutil.cpu_percent", return_value=42.0) as mock_cpu, \
+             patch("psutil.boot_time", return_value=0.0), \
+             patch("health.time.time", return_value=60.0), \
+             patch("os.path.ismount", return_value=False), \
+             patch("os.path.exists", return_value=False), \
+             patch("health.CPU_TEMP_PATH", "/nonexistent"), \
+             patch.object(config, "LOG_PATH", str(log_file)):
+            result = collect(obd_reconnect_count=0, restart_count=1, rtc_ok=1)
+
+        mock_cpu.assert_called_once()
+        args, kwargs = mock_cpu.call_args
+        interval = kwargs.get("interval", args[0] if args else None)
+        assert interval is not None and interval > 0
+        assert result["cpu_usage_pct"] == 42.0

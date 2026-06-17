@@ -65,6 +65,58 @@ class TestCheckRtc:
 
 
 # ---------------------------------------------------------------------------
+# wait_for_usb_mount()
+# ---------------------------------------------------------------------------
+
+class TestWaitForUsbMount:
+    def test_returns_true_immediately_when_already_mounted(self):
+        from main import wait_for_usb_mount
+
+        with patch("main.os.path.ismount", return_value=True), \
+             patch("main.time.sleep") as mock_sleep:
+            assert wait_for_usb_mount() is True
+
+        mock_sleep.assert_not_called()  # no polling needed when already mounted
+
+    def test_polls_then_succeeds_when_drive_appears(self):
+        from main import wait_for_usb_mount
+
+        # Not mounted for the first two checks, then mounted.
+        mount_states = iter([False, False, True])
+
+        with patch("main.os.path.ismount", side_effect=lambda _p: next(mount_states)), \
+             patch("main.time.sleep") as mock_sleep:
+            assert wait_for_usb_mount() is True
+
+        assert mock_sleep.call_count == 2  # polled twice before the drive appeared
+
+    def test_returns_false_when_drive_never_mounts(self):
+        from main import wait_for_usb_mount
+
+        # monotonic advances past the deadline so the loop gives up.
+        times = iter([0.0, 1.0, 1000.0])
+
+        with patch("main.os.path.ismount", return_value=False), \
+             patch("main.time.monotonic", side_effect=lambda: next(times)), \
+             patch("main.time.sleep"):
+            assert wait_for_usb_mount(timeout_s=120) is False
+
+    def test_main_exits_when_usb_never_mounts(self):
+        """main() must exit(1) — not crash later — if the drive never mounts."""
+        from main import main
+
+        with patch("main.wait_for_usb_mount", return_value=False), \
+             patch("main.init_file_logging") as mock_init_log, \
+             patch("main.get_connection") as mock_get_conn:
+            with pytest.raises(SystemExit) as exc:
+                main()
+
+        assert exc.value.code == 1
+        mock_init_log.assert_not_called()  # bailed before touching the USB log
+        mock_get_conn.assert_not_called()  # and before opening the DB
+
+
+# ---------------------------------------------------------------------------
 # main() — full boot + watchdog loop, interrupted by KeyboardInterrupt
 # ---------------------------------------------------------------------------
 
@@ -84,6 +136,7 @@ class TestMain:
         mock_tm = MagicMock()
 
         with patch("builtins.open", mock_open(read_data="ds1307\n")), \
+             patch("main.wait_for_usb_mount", return_value=True), \
              patch("main.health.write_rtc_ok"), \
              patch("main.health.increment_restart_count", return_value=1), \
              patch("main.get_connection", return_value=mock_conn), \
@@ -113,6 +166,7 @@ class TestMain:
         mock_notifier = MagicMock()
 
         with patch("builtins.open", mock_open(read_data="ds1307\n")), \
+             patch("main.wait_for_usb_mount", return_value=True), \
              patch("main.health.write_rtc_ok"), \
              patch("main.health.increment_restart_count", return_value=1), \
              patch("main.get_connection", return_value=mock_conn), \
@@ -182,6 +236,7 @@ class TestMain:
 
         with patch("main.signal.signal", side_effect=fake_signal), \
              patch("builtins.open", mock_open(read_data="ds1307\n")), \
+             patch("main.wait_for_usb_mount", return_value=True), \
              patch("main.health.write_rtc_ok"), \
              patch("main.health.increment_restart_count", return_value=1), \
              patch("main.get_connection", return_value=MagicMock()), \

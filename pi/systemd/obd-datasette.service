@@ -1,3 +1,13 @@
+# obd-datasette.service
+#
+# On-demand read-only DB browser. NOT enabled at boot (install.sh skips the
+# enable) — start it with `jarvis datasette start` only when you need to browse.
+#
+# Binds 127.0.0.1, NOT 0.0.0.0: Datasette has no authentication and the DB holds
+# the full vehicle history. 0.0.0.0 would expose it to the iPhone-hotspot LAN.
+# Reach it remotely over an SSH tunnel through Tailscale:
+#     ssh -L 8001:localhost:8001 balu@<pi-tailscale-ip>   then open localhost:8001
+
 [Unit]
 Description=Datasette read-only browser for OBD SQLite data
 After=network.target
@@ -5,7 +15,7 @@ After=network.target
 [Service]
 Type=simple
 User=balu
-ExecStart=/home/balu/project300k/pi/venv/bin/datasette --host 0.0.0.0 --port 8001 --immutable /mnt/usb/data/obd.db
+ExecStart=/home/balu/project300k/pi/venv/bin/datasette --host 127.0.0.1 --port 8001 --immutable /mnt/usb/data/obd.db
 Restart=on-failure
 RestartSec=10
 

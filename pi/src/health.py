@@ -216,8 +216,12 @@ def _read_last_error() -> str | None:
             # without loading the full rotating log file into memory.
             f.seek(max(0, size - 65536))
             tail = f.read().decode("utf-8", errors="replace")
+        # Match the level FIELD specifically, not the substring "| ERROR"
+        # anywhere — otherwise a log message that quotes that text would be
+        # misreported as the last error. Format: "<ts> | <LEVEL> | <message>".
         for line in reversed(tail.splitlines()):
-            if "| ERROR" in line:
+            parts = line.split(" | ", 2)
+            if len(parts) >= 2 and parts[1].strip() == "ERROR":
                 return line.strip()
     except OSError:
         pass
@@ -285,10 +289,12 @@ def collect(
     usb_mounted = _check_usb_mounted()   # call once, reuse below
     disk       = psutil.disk_usage(USB_MOUNT_PATH) if usb_mounted else None
 
-    # cpu_percent(interval=None) returns usage since last call — non-blocking.
-    # The first call ever returns 0.0 (no prior measurement), which is acceptable
-    # at boot. Subsequent calls return an accurate reading without blocking 1s.
-    cpu_usage = psutil.cpu_percent(interval=None)
+    # interval must be a short BLOCKING sample, not None. collect() runs only in
+    # the sync one-shot process, which lives for a single call — so the
+    # "usage since last call" form (interval=None) has no prior sample and would
+    # return 0.0 every single time, making cpu_usage_pct a dead metric. A 0.2s
+    # blocking window gives a real instantaneous reading at negligible cost.
+    cpu_usage = psutil.cpu_percent(interval=0.2)
 
     return {
         "cpu_temp_c":          _read_cpu_temp(),

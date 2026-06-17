@@ -54,6 +54,13 @@ COMMIT_INTERVAL_S  = 2.0  # seconds — maximum time between commits
 # and systemd to restart a clean process (which re-runs get_connection()).
 MAX_CONSECUTIVE_FLUSH_FAILURES = 5
 
+# Consecutive flushes in which every row for a single table failed (while other
+# tables committed fine) before logging a loud warning. The global failure
+# counter above never trips in this case — the commit succeeds — so a column or
+# routing bug would otherwise silently discard one table's stream forever. This
+# surfaces it. At ~1 flush / COMMIT_INTERVAL_S this is ~10s of total loss.
+TABLE_FAILURE_WARN_STREAK = 5
+
 # Reject writes to tables not in this set to catch routing bugs early.
 ALLOWED_TABLES = {
     "obd_1s", "obd_5s", "obd_30s",
@@ -97,6 +104,10 @@ class QueueWriter:
         # Mutated only by the writer thread in _flush(); read by the main
         # thread via write_failing. Int read/write is atomic under the GIL.
         self._consecutive_failures = 0
+        # Per-table streak of flushes where every row for that table failed to
+        # insert while the batch still committed. Detects a single mis-routed or
+        # schema-drifted table silently losing all its rows. Writer-thread only.
+        self._table_fail_streak: dict[str, int] = {}
         self._thread = threading.Thread(
             target=self._drain, daemon=True, name="queue-writer"
         )
@@ -239,13 +250,18 @@ class QueueWriter:
         """
         with self._db_lock:
             row_errors = 0
+            # Per-table row and error tallies for silent-bleed detection.
+            table_total: dict[str, int] = {}
+            table_errors: dict[str, int] = {}
             for table, row in pending:
+                table_total[table] = table_total.get(table, 0) + 1
                 try:
                     self._insert(table, row)
                 except Exception as e:
                     # Log and skip bad rows — one bad row must not prevent
                     # the rest of the batch from being committed.
                     row_errors += 1
+                    table_errors[table] = table_errors.get(table, 0) + 1
                     logger.error(f"SQLite write error on '{table}': {e} — row discarded")
             try:
                 self._conn.commit()
@@ -263,6 +279,41 @@ class QueueWriter:
             self._consecutive_failures += 1
         else:
             self._consecutive_failures = 0
+
+        self._track_table_failures(table_total, table_errors, commit_ok)
+
+    def _track_table_failures(
+        self,
+        table_total: dict[str, int],
+        table_errors: dict[str, int],
+        commit_ok: bool,
+    ) -> None:
+        """Warn when one table loses every row while the batch still commits.
+
+        The global write_failing guard never trips here — the commit succeeded,
+        so the DB is writable — but a column/routing bug specific to one table
+        discards all its rows on every flush. Track a per-table streak and log a
+        loud warning once it crosses TABLE_FAILURE_WARN_STREAK so the silent loss
+        becomes visible (in logs and, via last_error, in the health snapshot).
+
+        Only meaningful when the commit succeeded; a failed commit is the global
+        path and resetting streaks there would mask a recovering table.
+        """
+        if not commit_ok:
+            return
+        for table, total in table_total.items():
+            if table_errors.get(table, 0) == total:
+                streak = self._table_fail_streak.get(table, 0) + 1
+                self._table_fail_streak[table] = streak
+                if streak == TABLE_FAILURE_WARN_STREAK:
+                    logger.error(
+                        f"Every row for table '{table}' has failed to insert for "
+                        f"{streak} consecutive flushes while other tables commit — "
+                        "likely a column/routing bug silently discarding all "
+                        f"'{table}' rows. Check the schema matches the row shape."
+                    )
+            else:
+                self._table_fail_streak[table] = 0
 
     def _insert(self, table: str, row: dict[str, Any]) -> None:
         """Build and execute a parameterised INSERT for one row.

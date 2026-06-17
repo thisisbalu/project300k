@@ -113,6 +113,8 @@ collector.stop() → trip_manager.stop() → queue_writer.stop() → obd_connect
 - `obd-datasette.service` — on-demand only (not enabled at boot); serves read-only Datasette browser at `:8001`; start via `jarvis datasette start`
 - `obd-led.service` — Type=simple, Restart=always; runs `led_status.py`, the status-LED daemon. Reads-only (systemd state + sysfs + read-only DB), fully decoupled from the collector. See `pi/CLAUDE.md` for the two-LED behaviour spec and GPIO pin map.
 
+`obd-collector` and `obd-led` are hardened (`ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges`, etc.). **`ReadWritePaths=/mnt/usb` is mandatory on both** — SQLite WAL needs read-write on the DB + `-wal`/`-shm` sidecars, and a WAL *reader* (the LED daemon) must open `-shm` read-write too; dropping it breaks DB access. `StartLimit*` must sit in `[Unit]`, not `[Service]` (systemd silently ignores them there).
+
 **Schema is create-only**: `storage.init_schema()` runs `CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS` on every boot — no migration logic. The schema is treated as final; changing a column on an already-deployed DB requires wiping `obd.db` (the data is synced to PostgreSQL, the USB copy is a backup).
 
 ## Data Volume
