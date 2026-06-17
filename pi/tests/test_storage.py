@@ -129,6 +129,35 @@ class TestGetConnection:
         assert "integrity check failed" in caplog.text
         assert os.path.exists(db_path + ".corrupt")
 
+    def test_verify_integrity_false_skips_check_and_quarantine(self, tmp_path):
+        from config import config
+        from storage import get_connection
+
+        db_path = str(tmp_path / "obd.db")
+        open(db_path, "w").close()
+
+        executed = []
+        original_connect = sqlite3.connect
+
+        def patched_connect(path, **kwargs):
+            conn = MagicMock()
+            conn.row_factory = None
+
+            def execute(sql, *a, **k):
+                executed.append(sql)
+                return MagicMock(**{"fetchone.return_value": ("wal",)})
+
+            conn.execute = execute
+            return conn
+
+        with patch("storage.sqlite3.connect", side_effect=patched_connect), \
+             patch.object(config, "DB_PATH", db_path):
+            conn = get_connection(verify_integrity=False)
+
+        # No integrity_check ran, and nothing was quarantined.
+        assert not any("integrity_check" in s for s in executed)
+        assert not os.path.exists(db_path + ".corrupt")
+
     def test_corrupt_db_moves_wal_and_shm_sidecars(self, tmp_path, caplog):
         # The orphaned -wal would otherwise be replayed into the fresh DB,
         # re-introducing corruption and crash-looping recovery.

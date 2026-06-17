@@ -95,7 +95,9 @@ def run() -> None:
     if not _check_network():
         return
 
-    conn = get_connection()
+    # Skip the full integrity_check on every 5-min sync open — the collector
+    # owns integrity management at boot and a full-DB scan here is wasted IO.
+    conn = get_connection(verify_integrity=False)
 
     try:
         _write_health_snapshot(conn)

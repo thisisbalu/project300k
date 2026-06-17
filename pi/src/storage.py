@@ -60,7 +60,7 @@ _TRIP_END_SQL = """
 """
 
 
-def get_connection(_depth: int = 0) -> sqlite3.Connection:
+def get_connection(_depth: int = 0, verify_integrity: bool = True) -> sqlite3.Connection:
     """Open and configure the SQLite connection.
 
     Enables WAL journal mode and foreign key enforcement. Sets row_factory
@@ -72,6 +72,12 @@ def get_connection(_depth: int = 0) -> sqlite3.Connection:
 
     Args:
         _depth: Internal recursion counter — callers must not set this.
+        verify_integrity: Run PRAGMA integrity_check (a full DB scan) on open.
+            The collector passes True once at boot. The sync process passes
+            False: it opens a fresh connection every 5 minutes, so a full-DB
+            scan each time is pure overhead on the growing DB on USB flash —
+            and the collector (which holds the DB open) already owns integrity
+            management, so sync must not quarantine the live DB underneath it.
 
     Returns:
         Configured sqlite3.Connection instance.
@@ -114,21 +120,24 @@ def get_connection(_depth: int = 0) -> sqlite3.Connection:
     # Negative value = size in KiB (8000 KiB = ~8MB). Safe on Pi 3B's 1GB RAM.
     conn.execute("PRAGMA cache_size=-8000")
 
-    # Integrity check on every open — detects corruption from a power cut that
-    # WAL recovery could not fully repair. On failure, the corrupt database is
-    # renamed to .corrupt and a fresh empty database is started rather than
+    # Integrity check at collector boot — detects corruption from a power cut
+    # that WAL recovery could not fully repair. On failure, the corrupt database
+    # is renamed to .corrupt and a fresh empty database is started rather than
     # crash-looping on every boot with an unrecoverable OperationalError.
-    result = conn.execute("PRAGMA integrity_check").fetchone()
-    if result[0] != "ok":
-        logger.error(
-            f"SQLite integrity check failed: {result[0]} — "
-            "renaming corrupt DB and starting fresh"
-        )
-        conn.close()
-        _quarantine_corrupt_db()
-        # Recurse to open a fresh database. _depth prevents infinite recursion
-        # if the drive is failing and every new file also fails integrity check.
-        return get_connection(_depth=_depth + 1)
+    # Skipped by the sync process (verify_integrity=False) — it reopens every
+    # 5 min, so a full-DB scan each time is wasted IO on a growing DB.
+    if verify_integrity:
+        result = conn.execute("PRAGMA integrity_check").fetchone()
+        if result[0] != "ok":
+            logger.error(
+                f"SQLite integrity check failed: {result[0]} — "
+                "renaming corrupt DB and starting fresh"
+            )
+            conn.close()
+            _quarantine_corrupt_db()
+            # Recurse to open a fresh database. _depth prevents infinite recursion
+            # if the drive is failing and every new file also fails integrity check.
+            return get_connection(_depth=_depth + 1)
 
     logger.info(f"SQLite connected: {config.DB_PATH}")
     return conn
