@@ -18,8 +18,13 @@ After=network.target
 Type=simple
 User=balu
 SupplementaryGroups=gpio
-WorkingDirectory=/home/balu/project300k/pi
-ExecStart=/home/balu/project300k/pi/venv/bin/python src/led_status.py
+# WorkingDirectory must be writable: the lgpio backend creates a notification
+# pipe (.lgd-nfy*) in the CWD on init. The code dir is under ProtectHome=read-only,
+# so pointing CWD there fails with "xCreatePipe: Read-only file system" and breaks
+# GPIO init. /tmp is a private writable tmpfs here (PrivateTmp=true). ExecStart uses
+# an absolute script path so the relative src/ path doesn't depend on the CWD.
+WorkingDirectory=/tmp
+ExecStart=/home/balu/project300k/pi/venv/bin/python /home/balu/project300k/pi/src/led_status.py
 Restart=always
 RestartSec=10
 Environment=PYTHONUNBUFFERED=1
