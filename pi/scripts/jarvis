@@ -67,8 +67,8 @@ case "$cmd" in
         sudo systemctl status rfcomm-connect.service --no-pager -l
         _header "obd-collector"
         sudo systemctl status obd-collector.service --no-pager -l
-        _header "obd-sync.timer"
-        sudo systemctl status obd-sync.timer --no-pager -l
+        _header "obd-sync"
+        sudo systemctl status obd-sync.service --no-pager -l
         _header "obd-led"
         sudo systemctl status obd-led.service --no-pager -l
         ;;
@@ -324,6 +324,31 @@ case "$cmd" in
         fi
         ;;
 
+    net)
+        # Hotspot/wlan0 control. After a drive's one sync, obd-sync.service runs
+        # `nmcli device disconnect wlan0`, which drops the link and suppresses
+        # autoconnect until reboot. Use `jarvis net up` to re-open an SSH window;
+        # `jarvis net down` to close it again.
+        case "${2:-status}" in
+            up)
+                sudo nmcli device connect wlan0
+                _ok "wlan0 connect requested (autoconnect re-enabled until reboot)"
+                ;;
+            down)
+                sudo nmcli device disconnect wlan0
+                _ok "wlan0 disconnected (autoconnect suppressed until reboot)"
+                ;;
+            status)
+                nmcli device status
+                ;;
+            *)
+                _err "Unknown net subcommand: $2"
+                echo "Usage: jarvis net [up|down|status]"
+                exit 1
+                ;;
+        esac
+        ;;
+
     bt)
         _header "Bluetooth dongle"
         hciconfig 2>/dev/null || _err "hciconfig failed — dongle missing?"
@@ -439,6 +464,7 @@ case "$cmd" in
         echo -e "${BOLD}System${RESET}"
         echo "  jarvis health            CPU temp, memory, disk, uptime"
         echo "  jarvis bt                Bluetooth and RFCOMM status"
+        echo "  jarvis net [up|down|status]  Open/close the hotspot link (SSH window after a drive's sync)"
         echo "  jarvis update            git pull + restart collector"
         ;;
 

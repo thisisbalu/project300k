@@ -1,10 +1,14 @@
 """
 sync.py — Batch sync of unsynced SQLite rows to the home server API.
 
-Run as a one-shot script by the obd-sync.timer systemd timer, firing
-5 minutes after boot and every 5 minutes thereafter while the Pi is running.
-The 5-minute delay gives the iPhone hotspot time to connect and Tailscale
-time to establish the VPN tunnel before the first sync attempt.
+Runs once per drive. Started at boot by obd-sync.service (Type=simple) and
+loops: it waits for connectivity (the Pi stays in NetworkManager autoconnect
+mode, so it associates with the hotspot whenever it appears at any point in the
+drive), then drains the entire backlog. On the first fully successful drain it
+exits; the unit's ExecStopPost runs `nmcli device disconnect wlan0`, which drops
+the link and suppresses autoconnect until the next reboot — so the Pi syncs once
+per drive, stays off afterwards, and reconnects proactively on the next boot.
+This means a drive's data lands at the start of the next drive (one-drive lag).
 
 Sync flow:
     1. Network check — confirm hotspot is up (wlan0 has IP) and server is
@@ -46,6 +50,8 @@ Idempotency / upsert contract (server side):
     trip permanently open on the server.
 """
 
+from __future__ import annotations
+
 import subprocess
 import sqlite3
 import time
@@ -82,33 +88,55 @@ SYNC_TABLE_ORDER = [
 
 
 def run() -> None:
-    """Entry point for the sync script.
+    """Proactive once-per-drive sync loop — entry point for obd-sync.service.
 
-    Performs the full sync cycle: network check → health snapshot →
-    per-table batch sync → summary log. Safe to run repeatedly.
+    The Pi stays in NetworkManager autoconnect mode, so it associates with the
+    hotspot whenever it is available at any point during the drive. This loop
+    waits for connectivity, then drains the whole backlog. On the first fully
+    successful drain it returns (exit 0); the unit's ExecStopPost then runs
+    `nmcli device disconnect wlan0`, dropping the link and suppressing autoconnect
+    until the next reboot — so the Pi syncs once per drive and stays off after,
+    reconnecting proactively next boot.
+
+    If connectivity never appears, the loop keeps polling cheaply until the car
+    powers the Pi off (the power cycle bounds it). A pass that fails partway
+    (server drops mid-drain) is retried after SYNC_POLL_S.
     """
     # Sync runs as a separate process — log to stderr→journald only, never the
     # collector's USB file (RotatingFileHandler is not multi-process safe).
     configure_sync_logging()
-    logger.info("Sync started")
+    logger.info("Sync started — waiting for hotspot/connectivity (one sync per drive)")
 
-    if not _check_network():
-        return
+    while True:
+        if _check_network():
+            if _sync_pass():
+                logger.info("Sync complete for this drive — releasing the link")
+                return
+            logger.warning(f"Sync pass incomplete — retrying in {config.SYNC_POLL_S}s")
+        time.sleep(config.SYNC_POLL_S)
 
-    # Skip the full integrity_check on every 5-min sync open — the collector
-    # owns integrity management at boot and a full-DB scan here is wasted IO.
+
+def _sync_pass() -> bool:
+    """Run one full drain pass over all tables; return True only if every table
+    fully drained (nothing left to retry this drive).
+
+    Opens a fresh connection per pass with verify_integrity=False — the collector
+    owns integrity management at boot, so a full-DB scan every pass is wasted IO.
+    """
     conn = get_connection(verify_integrity=False)
-
     try:
         _write_health_snapshot(conn)
         total_rows = 0
-
+        pass_ok = True
         for table in SYNC_TABLE_ORDER:
-            synced = _sync_table(conn, table)
+            synced, ok = _sync_table(conn, table)
             total_rows += synced
-
-        logger.info(f"Sync complete — {total_rows} rows synced across {len(SYNC_TABLE_ORDER)} tables")
-
+            pass_ok = pass_ok and ok
+        logger.info(
+            f"Sync pass: {total_rows} rows across {len(SYNC_TABLE_ORDER)} tables "
+            f"({'complete' if pass_ok else 'incomplete'})"
+        )
+        return pass_ok
     finally:
         conn.close()
 
@@ -132,7 +160,9 @@ def _check_network() -> bool:
             capture_output=True, text=True, timeout=5
         )
         if "inet " not in result.stdout:
-            logger.info("Sync skipped — no hotspot (wlan0 has no IP)")
+            # DEBUG, not INFO: run() polls this every SYNC_POLL_S while waiting
+            # for the hotspot, so an INFO line here would spam the journal.
+            logger.debug("No hotspot yet (wlan0 has no IP)")
             return False
     except FileNotFoundError:
         logger.warning("Network check failed (wlan0): 'ip' binary not found — check PATH")
@@ -149,7 +179,8 @@ def _check_network() -> bool:
             capture_output=True, timeout=5
         )
         if result.returncode != 0:
-            logger.info(f"Sync skipped — server unreachable (ping {config.TAILSCALE_IP} failed)")
+            # DEBUG, not INFO — polled every SYNC_POLL_S; see note above.
+            logger.debug(f"Server unreachable (ping {config.TAILSCALE_IP} failed)")
             return False
     except Exception as e:
         logger.warning(f"Network check failed (ping): {e}")
@@ -204,7 +235,7 @@ def _write_health_snapshot(conn: sqlite3.Connection) -> None:
         logger.error(f"Failed to write health snapshot: {e}")
 
 
-def _sync_table(conn: sqlite3.Connection, table: str) -> int:
+def _sync_table(conn: sqlite3.Connection, table: str) -> tuple[int, bool]:
     """Sync all unsynced rows for one table to the server in batches.
 
     Reads SYNC_BATCH_SIZE rows WHERE synced=0, serialises to JSON,
@@ -213,17 +244,21 @@ def _sync_table(conn: sqlite3.Connection, table: str) -> int:
     Repeats until no unsynced rows remain or _MAX_BATCHES_PER_TABLE is hit.
 
     On POST failure, logs the error and returns the count synced so far —
-    next run retries the rest.
+    the caller retries the rest later this drive.
 
     Args:
         conn:  Active SQLite connection.
         table: Table name to sync.
 
     Returns:
-        Total number of rows successfully synced for this table.
+        (rows_synced, ok). ok is False when the table did not fully drain this
+        pass — a POST failed, rows could not be marked synced, or the per-table
+        batch cap was hit — so the caller (run loop) knows to retry. A table that
+        does not exist yet (Ford tables pre-FORScan) is a clean skip: ok=True.
     """
     total_synced = 0
     batches = 0
+    ok = True
 
     while batches < _MAX_BATCHES_PER_TABLE:
         batches += 1
@@ -283,22 +318,25 @@ def _sync_table(conn: sqlite3.Connection, table: str) -> int:
             # and let the next sync run retry once the writer releases the lock —
             # the server's ON CONFLICT(id) DO NOTHING makes the re-POST harmless.
             if not marked:
+                ok = False
                 break
 
             total_synced += len(row_ids)
             logger.info(f"Synced {len(row_ids)} rows from {table} (total: {total_synced})")
 
         except requests.RequestException as e:
-            logger.error(f"Sync POST failed for {table}: {e} — will retry next run")
+            logger.error(f"Sync POST failed for {table}: {e} — will retry this drive")
+            ok = False
             break
 
     if batches >= _MAX_BATCHES_PER_TABLE:
+        ok = False
         logger.warning(
             f"Reached max batch limit ({_MAX_BATCHES_PER_TABLE}) for '{table}' — "
-            "possible stuck sync loop. Remaining rows deferred to next run."
+            "possible stuck sync loop. Remaining rows deferred to the next pass."
         )
 
-    return total_synced
+    return total_synced, ok
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -1,31 +1,34 @@
 # obd-sync.service
 #
-# One-shot service that runs the sync script once per invocation.
-# Triggered by obd-sync.timer — not started directly.
+# Once-per-drive sync. Started at boot (the Pi powers on with the car, so one
+# boot == one drive) and runs src/sync.py as a loop: it waits for connectivity
+# — the Pi stays in NetworkManager autoconnect mode, so it associates with the
+# hotspot whenever it appears at any point in the drive — then drains the whole
+# backlog. On the first fully successful drain sync.py exits.
 #
-# Type=oneshot means systemd waits for the script to exit before
-# marking the service as done. The timer will not fire again until
-# the previous sync run has fully completed.
+# ExecStopPost then runs `nmcli device disconnect wlan0`, which drops the link
+# AND suppresses autoconnect until the next reboot. So the Pi syncs once, stays
+# off for the rest of the drive (no connect/disconnect flapping), and reconnects
+# proactively on the next boot. (`+` runs it as root regardless of User=; `-`
+# ignores failure if wlan0 is already disconnected.)
 #
-# Requires network-online.target so the sync script is not invoked
-# before the network interface is up. The sync script performs its
-# own two-step connectivity check (wlan0 IP + Tailscale ping) as a
-# second layer of validation before attempting any POST.
+# Type=simple + no Restart=: exactly one sync attempt-loop per boot. The old
+# obd-sync.timer (every 5 min) is removed — this replaces it.
 
 [Unit]
 Description=OBD Sync — Project 300K
-After=network-online.target
-Wants=network-online.target
+After=NetworkManager.service
+Wants=NetworkManager.service
 
 [Service]
-Type=oneshot
+Type=simple
 User=balu
 WorkingDirectory=/home/balu/project300k/pi
 ExecStart=/home/balu/project300k/pi/venv/bin/python src/sync.py
-# Belt-and-suspenders kill if sync hangs permanently (e.g. requests stall
-# beyond the 30s timeout). Prevents a stuck sync from blocking the next
-# timer-triggered invocation indefinitely.
-TimeoutStartSec=120
+ExecStopPost=+-/usr/bin/nmcli device disconnect wlan0
 Environment=PYTHONUNBUFFERED=1
 StandardOutput=journal
 StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

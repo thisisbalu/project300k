@@ -17,10 +17,11 @@ class TestCheckNetwork:
         from sync import _check_network
         mock_result = MagicMock()
         mock_result.stdout = "link/ether aa:bb:cc:dd:ee:ff"  # no "inet "
+        # The "no hotspot yet" line is DEBUG now (run() polls it every poll).
         with patch("sync.subprocess.run", return_value=mock_result), \
-             caplog.at_level(logging.INFO, logger="obd-collector"):
+             caplog.at_level(logging.DEBUG, logger="obd-collector"):
             assert _check_network() is False
-        assert "no hotspot" in caplog.text
+        assert "No hotspot yet" in caplog.text
 
     def test_returns_false_when_ping_fails(self, caplog):
         import logging
@@ -29,8 +30,9 @@ class TestCheckNetwork:
         mock_ip_result.stdout = "inet 192.168.1.2/24"
         mock_ping_result = MagicMock()
         mock_ping_result.returncode = 1
+        # The "server unreachable" line is DEBUG now (polled).
         with patch("sync.subprocess.run", side_effect=[mock_ip_result, mock_ping_result]), \
-             caplog.at_level(logging.INFO, logger="obd-collector"):
+             caplog.at_level(logging.DEBUG, logger="obd-collector"):
             assert _check_network() is False
         assert "unreachable" in caplog.text
 
@@ -91,9 +93,10 @@ class TestSyncTable:
         mock_response.raise_for_status.return_value = None
 
         with patch("sync.requests.post", return_value=mock_response):
-            count = _sync_table(db_conn, "obd_1s")
+            count, ok = _sync_table(db_conn, "obd_1s")
 
         assert count == 3
+        assert ok is True
 
     def test_marks_rows_synced_1_after_post(self, db_conn, trip_row):
         from sync import _sync_table
@@ -112,14 +115,16 @@ class TestSyncTable:
         import logging
         from sync import _sync_table
         with caplog.at_level(logging.DEBUG, logger="obd-collector"):
-            count = _sync_table(db_conn, "nonexistent_table")
+            count, ok = _sync_table(db_conn, "nonexistent_table")
         assert count == 0
+        assert ok is True  # missing table is a clean skip, not a failure
         assert "does not exist" in caplog.text
 
     def test_returns_zero_when_no_unsynced_rows(self, db_conn):
         from sync import _sync_table
-        count = _sync_table(db_conn, "obd_1s")
+        count, ok = _sync_table(db_conn, "obd_1s")
         assert count == 0
+        assert ok is True
 
     def test_request_exception_stops_sync_and_logs(self, db_conn, trip_row, caplog):
         import logging
@@ -129,9 +134,10 @@ class TestSyncTable:
         import requests as _req
         with patch("sync.requests.post", side_effect=_req.RequestException("connection refused")), \
              caplog.at_level(logging.ERROR, logger="obd-collector"):
-            count = _sync_table(db_conn, "obd_1s")
+            count, ok = _sync_table(db_conn, "obd_1s")
 
         assert count == 0
+        assert ok is False  # POST failure → table not fully drained → retry
         assert "Sync POST failed" in caplog.text
 
     def test_rows_remain_unsynced_after_failure(self, db_conn, trip_row):
@@ -176,11 +182,12 @@ class TestSyncTable:
         with patch("sync.requests.post", return_value=mock_response) as post, \
              patch("sync.time.sleep"), \
              caplog.at_level(logging.ERROR, logger="obd-collector"):
-            count = _sync_table(proxy, "obd_1s")
+            count, ok = _sync_table(proxy, "obd_1s")
 
         # POSTed exactly one batch then stopped — no spinning, no inflated count.
         assert post.call_count == 1
         assert count == 0
+        assert ok is False  # rows couldn't be marked synced → retry
         unsynced = db_conn.execute("SELECT COUNT(*) FROM obd_1s WHERE synced=0").fetchone()[0]
         assert unsynced == config.SYNC_BATCH_SIZE * 3
 
@@ -330,41 +337,72 @@ class TestWriteHealthSnapshot:
 
 
 # ---------------------------------------------------------------------------
-# run() — integration of network check + health + table sync
+# _sync_pass() — one full drain pass, reports overall success
 # ---------------------------------------------------------------------------
 
-class TestRun:
-    def test_run_skips_everything_when_network_fails(self, caplog):
-        import logging
-        from sync import run
-        with patch("sync._check_network", return_value=False), \
-             patch("sync.get_connection") as mock_conn, \
-             caplog.at_level(logging.INFO, logger="obd-collector"):
-            run()
-        mock_conn.assert_not_called()
-
-    def test_run_closes_connection_on_completion(self, db_conn):
-        from sync import run
+class TestSyncPass:
+    def test_returns_true_and_closes_when_all_tables_ok(self):
+        from sync import _sync_pass
         mock_conn = MagicMock()
-        mock_conn.__enter__ = MagicMock(return_value=mock_conn)
-        mock_conn.__exit__ = MagicMock(return_value=False)
-
-        with patch("sync._check_network", return_value=True), \
-             patch("sync.get_connection", return_value=mock_conn), \
+        with patch("sync.get_connection", return_value=mock_conn), \
              patch("sync._write_health_snapshot"), \
-             patch("sync._sync_table", return_value=0):
-            run()
-
+             patch("sync._sync_table", return_value=(0, True)):
+            assert _sync_pass() is True
         mock_conn.close.assert_called_once()
 
-    def test_run_closes_connection_on_exception(self):
-        from sync import run
+    def test_returns_false_when_any_table_incomplete(self):
+        from sync import _sync_pass
         mock_conn = MagicMock()
+        # First table fails, the rest succeed → pass is incomplete (retry).
+        with patch("sync.get_connection", return_value=mock_conn), \
+             patch("sync._write_health_snapshot"), \
+             patch("sync._sync_table", side_effect=lambda c, t: (0, t != "trips")):
+            assert _sync_pass() is False
+        mock_conn.close.assert_called_once()
 
-        with patch("sync._check_network", return_value=True), \
-             patch("sync.get_connection", return_value=mock_conn), \
+    def test_closes_connection_on_exception(self):
+        from sync import _sync_pass
+        mock_conn = MagicMock()
+        with patch("sync.get_connection", return_value=mock_conn), \
              patch("sync._write_health_snapshot", side_effect=RuntimeError("boom")):
             with pytest.raises(RuntimeError):
-                run()
-
+                _sync_pass()
         mock_conn.close.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# run() — once-per-drive loop: wait for connectivity, drain, exit on success
+# ---------------------------------------------------------------------------
+
+class _StopLoop(Exception):
+    """Sentinel to break run()'s infinite wait loop in tests."""
+
+
+class TestRun:
+    def test_run_waits_without_syncing_when_no_network(self):
+        from sync import run
+        # No connectivity → never opens a connection; the loop sleeps and retries.
+        # time.sleep raises to break out after the first failed check.
+        with patch("sync._check_network", return_value=False), \
+             patch("sync._sync_pass") as mock_pass, \
+             patch("sync.time.sleep", side_effect=_StopLoop):
+            with pytest.raises(_StopLoop):
+                run()
+        mock_pass.assert_not_called()
+
+    def test_run_returns_after_first_successful_pass(self):
+        from sync import run
+        with patch("sync._check_network", return_value=True), \
+             patch("sync._sync_pass", return_value=True) as mock_pass, \
+             patch("sync.time.sleep", side_effect=_StopLoop):
+            run()  # returns cleanly, no sleep reached
+        mock_pass.assert_called_once()
+
+    def test_run_retries_after_incomplete_pass_then_succeeds(self):
+        from sync import run
+        with patch("sync._check_network", return_value=True), \
+             patch("sync._sync_pass", side_effect=[False, True]) as mock_pass, \
+             patch("sync.time.sleep") as mock_sleep:
+            run()
+        assert mock_pass.call_count == 2  # failed pass → retry → success → exit
+        mock_sleep.assert_called_once()   # slept once between the two passes

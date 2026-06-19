@@ -33,8 +33,16 @@ TAILSCALE_IP=REPLACE_ME_TAILSCALE_IP
 # Optional — defaults shown
 OBD_PORT=/dev/rfcomm0
 SYNC_BATCH_SIZE=500
+# Seconds between connectivity polls / pass retries in the once-per-drive sync loop
+SYNC_POLL_S=15
 DB_PATH=/mnt/usb/data/obd.db
 LOG_PATH=/mnt/usb/logs/obd.log
+
+# Hotspot NetworkManager connection name (the iPhone SSID as NM lists it under
+# 'nmcli connection show'). Used only by install.sh to keep autoconnect ON so the
+# Pi connects proactively. Autoconnect is the NM default anyway; set this to have
+# install.sh enforce it.
+HOTSPOT_CONN=REPLACE_ME_HOTSPOT_SSID
 
 # Status LEDs (optional — defaults shown). See pi/CLAUDE.md for the behaviour spec.
 LED_ENABLED=true
@@ -91,16 +99,31 @@ echo "==> Installing systemd services"
 sudo cp "$PI_DIR/systemd/rfcomm-connect.service" "$SYSTEMD_DIR/"
 sudo cp "$PI_DIR/systemd/obd-collector.service" "$SYSTEMD_DIR/"
 sudo cp "$PI_DIR/systemd/obd-sync.service" "$SYSTEMD_DIR/"
-sudo cp "$PI_DIR/systemd/obd-sync.timer" "$SYSTEMD_DIR/"
 sudo cp "$PI_DIR/systemd/obd-datasette.service" "$SYSTEMD_DIR/"
 sudo cp "$PI_DIR/systemd/obd-led.service" "$SYSTEMD_DIR/"
+
+# Remove the old recurring sync timer if a previous install left it behind —
+# sync now runs once per drive via obd-sync.service (enabled below).
+sudo systemctl disable obd-sync.timer 2>/dev/null || true
+sudo rm -f "$SYSTEMD_DIR/obd-sync.timer"
 
 echo "==> Enabling services"
 sudo systemctl daemon-reload
 sudo systemctl enable rfcomm-connect.service
 sudo systemctl enable obd-collector.service
-sudo systemctl enable obd-sync.timer
+sudo systemctl enable obd-sync.service
 sudo systemctl enable obd-led.service
+
+# Keep the hotspot autoconnect ON so the Pi connects proactively. Autoconnect is
+# the NM default; this enforces it if HOTSPOT_CONN names a real profile.
+HOTSPOT_CONN=$(grep -E '^HOTSPOT_CONN=' "$CONFIG_DIR/config.env" 2>/dev/null | cut -d= -f2-)
+if [ -n "$HOTSPOT_CONN" ] && [ "$HOTSPOT_CONN" != "REPLACE_ME_HOTSPOT_SSID" ] \
+   && nmcli -t -f NAME connection show 2>/dev/null | grep -qxF "$HOTSPOT_CONN"; then
+    sudo nmcli connection modify "$HOTSPOT_CONN" connection.autoconnect yes
+    echo "    autoconnect=yes ensured on hotspot profile '$HOTSPOT_CONN'"
+else
+    echo "    Hotspot autoconnect: set HOTSPOT_CONN in config.env to enforce (NM default is already on)"
+fi
 # obd-datasette is deliberately NOT enabled — it is on-demand only (started via
 # `jarvis datasette start`). It serves the full DB read-only and binds localhost,
 # so leaving it off at boot avoids running an unneeded listener 24/7.
@@ -114,7 +137,7 @@ echo "  2. Generate API key: openssl rand -hex 32"
 echo "  3. Pair OBDLink MX+ via bluetoothctl and bind rfcomm0"
 echo "  4. sudo systemctl start obd-collector"
 echo "     (TimeoutStartSec=300 — allow up to 5 min for first OBD connection)"
-echo "  5. sudo systemctl start obd-sync.timer"
+echo "  5. sudo systemctl start obd-sync.service   (syncs once per drive; also auto-runs at boot)"
 echo "  6. sudo systemctl start obd-led      (verify wiring first: jarvis led test)"
-echo "  7. Check status: sudo systemctl status obd-collector obd-sync.timer obd-led"
+echo "  7. Check status: sudo systemctl status obd-collector obd-sync.service obd-led"
 echo "  8. Watch logs: tail -f /mnt/usb/logs/obd.log"

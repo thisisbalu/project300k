@@ -128,17 +128,19 @@ process alive), the two writers don't share one `.tmp` and race — one renaming
 away makes the other's `os.replace()` fail with ENOENT. The temp is also unlinked
 if the write/rename fails partway, so a failed write leaves no stray file.
 
-## Sync
-- Fires 5 min after boot via systemd timer, then every 5 min
-- Two-step network check: wlan0 has IP (hotspot) → ping Tailscale IP (server reachable)
-- POSTs unsynced rows (`WHERE synced=0`) to Golang API in priority order: obd_1s first, trips last
-- Auth: Bearer token in Authorization header
-- Config: `/etc/obd-collector/config.env` (never committed to git)
-- Marks `synced=1` after successful POST — retries with backoff on `OperationalError`; if the local `synced=1` UPDATE never lands (writer holds the lock), the table loop **breaks** rather than re-POSTing the same `synced=0` batch (server `ON CONFLICT DO NOTHING` makes the next run's retry safe)
-- Max 1000 batches per table per run to guard against stuck-loop
-- Opens the DB with `get_connection(verify_integrity=False)` — the per-open full `integrity_check` is skipped in the sync process (it reopens every 5 min); the collector owns integrity management at boot, and sync must not quarantine the live DB
-- Pi health snapshot included in every sync payload (reads reconnect_count from file)
-- `cpu_usage_pct` uses `psutil.cpu_percent(interval=0.2)` — a short **blocking** sample. `interval=None` is wrong here: sync is a one-shot process, so "usage since last call" has no prior sample and returns 0.0 every run. Same trap in any short-lived process.
+## Sync — once per drive (boot-triggered), proactive-connect, then disconnect
+- **One sync per drive, not a 5-min timer.** The Pi powers on with the car (one boot == one drive). `obd-sync.service` (`Type=simple`) starts `sync.py` at boot, which **loops**: poll `_check_network()` every `SYNC_POLL_S` (default 15s); when connected, drain the whole backlog; on the **first fully-successful drain** `run()` returns (exit 0). If the hotspot never appears, the loop just keeps polling cheaply until the car powers the Pi off.
+- **Proactive connect = NetworkManager autoconnect (its default, left ON).** The Pi associates with the hotspot whenever it appears at any point in the drive — not just a boot window. `install.sh` can enforce `autoconnect yes` on the `HOTSPOT_CONN` profile.
+- **Stop after the one sync** = the unit's `ExecStopPost=+-nmcli device disconnect wlan0`. `nmcli device disconnect` drops the link **and suppresses autoconnect until the next reboot**, so the Pi stays off for the rest of the drive (no connect/disconnect flapping) and reconnects proactively next boot. **Consequence:** a drive's data lands at the *start of the next drive* (one-drive lag), and the Pi is unreachable over Tailscale/SSH after the sync — use `jarvis net up`/`down` to open an SSH window on demand.
+- Two-step network check: wlan0 has IP (hotspot) → ping Tailscale IP (server reachable). The per-poll "no hotspot / unreachable" lines are **DEBUG** (would otherwise spam the journal every `SYNC_POLL_S`).
+- POSTs unsynced rows (`WHERE synced=0`) to Golang API in priority order: trips first (FK parent), obd_1s next; pi_health_log last
+- Auth: Bearer token in Authorization header. Config: `/etc/obd-collector/config.env` (never committed)
+- `_sync_table` returns `(rows_synced, ok)`; `ok` is False when a table didn't fully drain (POST failed, rows couldn't be marked synced, or batch cap hit). `_sync_pass` ANDs `ok` across tables; a failed pass is retried after `SYNC_POLL_S`, so a clean full drain is required before the Pi disconnects.
+- Marks `synced=1` after successful POST — retries with backoff on `OperationalError`; if the local `synced=1` UPDATE never lands (writer holds the lock), the table loop **breaks** (returns ok=False) rather than re-POSTing the same `synced=0` batch (server `ON CONFLICT DO NOTHING` makes the retry safe)
+- Max 1000 batches per table per pass to guard against stuck-loop (hitting it sets ok=False → retried next pass)
+- Opens the DB with `get_connection(verify_integrity=False)` per pass — the per-open full `integrity_check` is skipped in the sync process; the collector owns integrity management at boot, and sync must not quarantine the live DB
+- Pi health snapshot written + synced once per pass (reads reconnect_count from file)
+- `cpu_usage_pct` uses `psutil.cpu_percent(interval=0.2)` — a short **blocking** sample. `interval=None` is wrong here: each pass is effectively a fresh sampling point, so "usage since last call" would return 0.0. Same trap in any short-lived/infrequent sampler.
 - `config.env` is created `chmod 600` by `install.sh` (it holds the API bearer token); `.env` values may be quoted — `config.py` strips one layer of matching surrounding quotes
 - Ford tables skipped silently at DEBUG level if they don't exist yet
 
@@ -204,8 +206,7 @@ Do NOT log: individual PID values, every poll cycle, WAL checkpoints, per-tick w
   - `TimeoutStartSec=300` — safety margin for the worst-case boot before `READY=1`: USB mount wait (≤120s) + the bounded initial connect attempt
   - `TimeoutStopSec=60` — covers 30s OBD timeout + 15s queue drain before SIGKILL
   - `StartLimitBurst`/`StartLimitIntervalSec` live in **`[Unit]`**, not `[Service]` — systemd ≥v230 silently ignores them in `[Service]` (defeating the crash-loop guard)
-- `obd-sync.service` — Type=oneshot, TimeoutStartSec=120
-- `obd-sync.timer` — OnBootSec=5min, OnUnitActiveSec=5min
+- `obd-sync.service` — Type=simple, **boot-triggered** (`WantedBy=multi-user.target`, `After=NetworkManager.service`), no `Restart=` → exactly one sync attempt-loop per boot/drive. `ExecStopPost=+-/usr/bin/nmcli device disconnect wlan0` drops the link (and suppresses autoconnect till reboot) when `sync.py` exits. **There is no `obd-sync.timer`** — it was removed; `install.sh` deletes any stale copy and enables the service directly.
 - `obd-led.service` — Type=simple, Restart=always, RestartSec=10, `SupplementaryGroups=gpio`; runs `led_status.py`
 
 **Hardening** (`obd-collector` + `obd-led`): `NoNewPrivileges`, `PrivateTmp`,
