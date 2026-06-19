@@ -1,0 +1,83 @@
+# Project 300K — backend stack: Tailscale + PostgreSQL + the Go /sync API.
+#
+# The Pi reaches this laptop over the PRIVATE Tailscale mesh (no public exposure).
+# Tailscale runs as a sidecar container so nothing installs on the macOS host.
+#
+# Topology: the `tailscale` sidecar owns the network namespace; `api` and `db`
+# share it (network_mode: service:tailscale). So:
+#   - api listens 0.0.0.0:8080  → reachable on the laptop's tailnet IP (the Pi).
+#   - db binds 127.0.0.1 only   → NOT on the tailnet; api reaches it via loopback.
+# The database lives in the named `pgdata` volume on the host, so rebuilding any
+# container never touches the 10-year data.
+#
+# Interpolated from .env: TS_AUTHKEY, TS_HOSTNAME, DB_PASSWORD, API_KEY, BIND_ADDR
+#   BIND_ADDR = host interface for the locally published :8080 (dev convenience);
+#   defaults to 127.0.0.1. Tailnet access does not depend on it.
+
+services:
+  tailscale:
+    image: tailscale/tailscale:latest
+    hostname: ${TS_HOSTNAME:-project300k-server}
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN          # required for kernel-mode tun networking
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:?set TS_AUTHKEY in .env (Tailscale admin console → Keys)}
+      TS_HOSTNAME: ${TS_HOSTNAME:-project300k-server}
+      TS_STATE_DIR: /var/lib/tailscale   # persist node identity across restarts
+      TS_USERSPACE: "false"              # kernel networking so api/db share the tailnet IP
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+    healthcheck:
+      # Healthy once the node is up and authenticated into the tailnet.
+      test: ["CMD", "tailscale", "status"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    ports:
+      # Local dev access to the api (the sidecar owns the shared namespace's ports).
+      # Tailnet access to :8080 is independent of this published mapping.
+      - "${BIND_ADDR:-127.0.0.1}:8080:8080"
+
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    # Share the tailscale namespace so api reaches us on loopback; bind to
+    # 127.0.0.1 so Postgres is never exposed on the tailnet.
+    network_mode: "service:tailscale"
+    command: ["postgres", "-c", "listen_addresses=127.0.0.1"]
+    depends_on:
+      tailscale:
+        condition: service_healthy
+    environment:
+      POSTGRES_DB: project300k
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d project300k"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    restart: unless-stopped
+    network_mode: "service:tailscale"
+    depends_on:
+      tailscale:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    environment:
+      # Shared loopback with db (same namespace), so the host is 127.0.0.1.
+      DATABASE_URL: postgres://app:${DB_PASSWORD:?set DB_PASSWORD in .env}@127.0.0.1:5432/project300k?sslmode=disable
+      API_KEY: ${API_KEY:?set API_KEY in .env}
+      LISTEN_ADDR: 0.0.0.0:8080
+
+volumes:
+  pgdata:
+  tailscale-state:
