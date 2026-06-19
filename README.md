@@ -26,9 +26,9 @@ Not passive monitoring — active longevity engineering. The system catches prob
 │                                          │  hardware watchdog   │
 └──────────────────────────────────────────┼──────────────────────┘
                                            │
-                          iPhone hotspot   │  (WiFi, 5 min after boot)
-                          auto-enabled via │  batch sync unsynced rows
-                          iOS Shortcuts    │
+                          iPhone hotspot   │  (WiFi, once per drive)
+                          auto-enabled via │  batch sync over Tailscale,
+                          iOS Shortcuts    │  then disconnect
                                            │
 ┌──────────────────────────────────────────▼──────────────────────┐
 │                       HOME SERVER                               │
@@ -218,14 +218,21 @@ project300k/
 
 ## Build Order
 
-1. **Part 1 — In-car Pi system**
+1. **Part 1 — In-car Pi system** ✅ *complete, live in car*
    - OBDLink MX+ → Pi → SQLite → sync to server via iPhone hotspot
    - systemd services, hardware watchdog, four-layer monitoring
+   - Sync runs **once per drive** (boot-triggered): proactive hotspot connect →
+     drain backlog over Tailscale → 5-min grace → disconnect
 
-2. **Part 2 — Home server**
-   - PostgreSQL schema, Golang sync API, Grafana dashboards, Claude API analysis
+2. **Part 2 — Home server** 🚧 *foundation built*
+   - **Done:** PostgreSQL schema + migrations, Golang `/sync` API (stdlib + pgx),
+     Docker stack (Tailscale sidecar + Postgres + API). Real Pi data is syncing in.
+   - **Pending:** Grafana dashboards, Claude API analysis, ntfy/email alerts,
+     `pg_dump`→rclone backups, `distance_km` computation.
+   - **Note:** running on a **laptop as a temporary server** (~2 months) until the
+     mini-PC is bought; the Pi reaches it over the private tailnet only.
 
-3. **Part 3 — Web dashboard**
+3. **Part 3 — Web dashboard** *(deferred)*
    - Trip history, health trends, DTC log, Claude analysis UI
 
 ---

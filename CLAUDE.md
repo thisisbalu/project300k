@@ -10,21 +10,28 @@ Active longevity engineering — catch problems early, drive maintenance decisio
 ```
 OBDLink MX+ → Bluetooth → Raspberry Pi 3B (in car)
     └── SQLite (USB flash drive, WAL mode, permanent storage)
-        └── Sync via iPhone hotspot (every 5 min after boot)
+        └── Sync via iPhone hotspot (once per drive, boot-triggered, over Tailscale)
             └── Golang API (home server, Tailscale only)
                 └── PostgreSQL
                     ├── Grafana dashboards + alerts
                     └── Claude API analysis (on demand + weekly + DTC triggered)
 ```
 
+**Home server is temporarily a laptop** (the real mini-PC isn't bought yet — ~2 months).
+The backend runs as a Docker stack (Tailscale sidecar + PostgreSQL + Go API) on the laptop;
+see `backend/README.md`. The Pi reaches it over the private tailnet only.
+
 ## Repo Layout
 ```
-pi/          Part 1 — Python OBD collector (Raspberry Pi 3B) ← COMPLETE
-backend/     Part 2 — Golang API + PostgreSQL + Grafana      ← NOT STARTED
+pi/          Part 1 — Python OBD collector (Raspberry Pi 3B) ← COMPLETE, live in car
+backend/     Part 2 — Golang API + PostgreSQL + Grafana      ← FOUNDATION BUILT
 frontend/    Part 3 — Web dashboard (deferred)
 ```
 
-Parts are built sequentially. Part 1 must be fully working before Part 2 starts.
+Part 2 status: schema + migrations + Go `/sync` API + Docker/Tailscale stack are built and
+running (real Pi data syncing into PostgreSQL). Still pending: Grafana dashboards, Claude API
+analysis, ntfy/email alerts, pg_dump→rclone backups, `distance_km` computation, and provisioning
+the real home server. Parts are built sequentially.
 
 See `pi/CLAUDE.md` for detailed Pi internals: threading model, OBD connection rules, SQLite thread-safety contract, polling tier PID table, shutdown order, Mode 22 hex addresses, and systemd service specs.
 
@@ -84,8 +91,9 @@ jarvis datasette start # start Datasette browser at :8001 (on-demand only)
 - No polling pause — all tiers record continuously during an active trip (idle/ESS-stop data is kept; filter on `rpm > 0` in Grafana when an average should exclude idle)
 - NULL stored for bad PID responses — never carry forward last known value
 - SQLite mirrors PostgreSQL structure exactly — same tables, same columns, same units
-- UUID per row for sync deduplication — `ON CONFLICT (id) DO NOTHING` on all inserts
-- Sync endpoint only over Tailscale + API key header (both required)
+- UUID per row for sync deduplication — `ON CONFLICT (id) DO NOTHING` on all inserts (trips is the one upsert: `DO UPDATE` end_time/duration_s)
+- Sync endpoint only over Tailscale + API key header (both required) — no public exposure
+- Sync runs **once per drive** (boot-triggered service, not a recurring timer): proactive NetworkManager autoconnect → drain whole backlog → 5-min grace (trailing data + SSH window) → `nmcli device disconnect wlan0` (suppresses autoconnect till reboot). `jarvis net hold/release` keeps the link up for debugging. See `pi/CLAUDE.md`.
 - WAL mode on ext4 USB drive — abrupt power cuts are safe, SQLite replays WAL on next open
 - All SQLite writes serialised through `QueueWriter`; thread safety via `_db_lock`
 - `reconnect_count` and `restart_count` persisted to USB drive files so sync script can read them independently of the collector process
@@ -105,10 +113,9 @@ jarvis datasette start # start Datasette browser at :8001 (on-demand only)
 collector.stop() → trip_manager.stop() → queue_writer.stop() → obd_connection.disconnect() → conn.close()
 ```
 
-**systemd services** (6 total):
+**systemd services** (5 total):
 - `obd-collector.service` — Type=notify, WatchdogSec=60, Restart=always
-- `obd-sync.service` — oneshot, runs the sync script
-- `obd-sync.timer` — fires `obd-sync.service` every 5 min after boot
+- `obd-sync.service` — Type=simple, **boot-triggered** (no timer): runs the once-per-drive sync loop, then `ExecStopPost` disconnects wlan0 (unless `jarvis net hold` flag is set). The old `obd-sync.timer` was removed.
 - `rfcomm-connect.service` — binds `/dev/rfcomm0` to the OBDLink MX+ MAC address at boot; uses `Wants=` (not `Requires=`) so `obd-collector.service` starts even if BT binding fails on the first attempt; includes `ExecStartPre=-/usr/bin/rfcomm release 0` to clear any stale binding from a previous session before connecting
 - `obd-datasette.service` — on-demand only (not enabled at boot); serves read-only Datasette browser at `:8001`; start via `jarvis datasette start`
 - `obd-led.service` — Type=simple, Restart=always; runs `led_status.py`, the status-LED daemon. Reads-only (systemd state + sysfs + read-only DB), fully decoupled from the collector. See `pi/CLAUDE.md` for the two-LED behaviour spec and GPIO pin map.
