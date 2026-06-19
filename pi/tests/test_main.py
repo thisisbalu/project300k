@@ -157,6 +157,48 @@ class TestMain:
         mock_obd.disconnect.assert_called_once()
         mock_conn.close.assert_called_once()
 
+    def test_main_signals_ready_without_blocking_on_obd_link(self):
+        """READY=1 must be sent without a blocking pre-flight OBD connect.
+
+        Blocking on the dongle here (engine off → no rfcomm0) would keep the
+        Type=notify unit in 'activating' until the systemd start-timeout, which
+        restarts it every ~5 min while parked and piles up collectors that
+        contend for /dev/rfcomm0. The Collector's monitor thread owns the link
+        instead, so boot must not call obd_connection.connect().
+        """
+        from main import main
+
+        mock_conn = MagicMock()
+        mock_qw = MagicMock()
+        mock_qw.write_failing = False
+        mock_coll = MagicMock()
+        mock_obd = MagicMock()
+        mock_tm = MagicMock()
+        mock_notifier = MagicMock()
+
+        def fake_sleep(n):
+            raise KeyboardInterrupt
+
+        with patch("builtins.open", mock_open(read_data="ds1307\n")), \
+             patch("main.wait_for_usb_mount", return_value=True), \
+             patch("main.health.write_rtc_ok"), \
+             patch("main.health.increment_restart_count", return_value=1), \
+             patch("main.get_connection", return_value=mock_conn), \
+             patch("main.init_schema"), \
+             patch("main.repair_orphaned_trips"), \
+             patch("main.QueueWriter", return_value=mock_qw), \
+             patch("main.OBDConnection", return_value=mock_obd), \
+             patch("main.TripManager", return_value=mock_tm), \
+             patch("main.Collector", return_value=mock_coll), \
+             patch("main.sdnotify.SystemdNotifier", return_value=mock_notifier), \
+             patch("main.time.sleep", side_effect=fake_sleep):
+            main()
+
+        mock_obd.connect.assert_not_called()       # no blocking pre-flight verify
+        mock_coll.start.assert_called_once()        # collector owns the link
+        pinged = [c.args for c in mock_notifier.notify.call_args_list]
+        assert ("READY=1",) in pinged               # signalled ready regardless
+
     def _run_main_with_dead_worker(self, mock_qw, mock_coll):
         """Boot main() with the given (mocked) worker objects; return the notifier."""
         from main import main

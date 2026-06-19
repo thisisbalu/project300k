@@ -118,9 +118,26 @@ class Collector:
 
         fast=False is required on Pi — without it, python-obd sends an AT
         command that causes the Pi Bluetooth stack to drop the connection.
+
+        The initial connect is best-effort: at boot the dongle is usually
+        unreachable (engine off → no /dev/rfcomm0). A failure here must not
+        abort startup — the monitor thread is started regardless and reconnects
+        every 10s until the dongle responds. Without this guard an initial
+        connect that raised would propagate out of main() before READY=1,
+        leaving the service to be killed and restarted by the systemd
+        start-timeout while parked.
         """
         self._stop_event.clear()
-        self._connect_and_watch()
+        try:
+            self._connect_and_watch()
+        except Exception as e:
+            logger.warning(f"Initial OBD connect failed: {e} — monitor will retry")
+            if self._async_conn is not None:
+                try:
+                    self._async_conn.stop()
+                except Exception:
+                    pass
+                self._async_conn = None
 
         self._monitor_thread = threading.Thread(
             target=self._monitor_connection,

@@ -118,11 +118,15 @@ then surfaces in the log and, via `last_error`, in the health snapshot.
 | `/mnt/usb/logs/obd.log` | logger | health.py (tail) | rotating log (5MB × 7) |
 
 Both counter files are written **atomically** — `health._atomic_write()` writes a
-`.tmp` file, `fsync`s it, then `os.replace()`s it onto the target and `fsync`s the
-directory. A power cut (engine off) can never leave a truncated/empty counter that
-the readers would silently reset to 0; a reader always sees the complete old or new
-file. (Plain `open(path,"w")` truncates before writing — that window is the bug this
-avoids.)
+`<path>.<pid>.tmp` file, `fsync`s it, then `os.replace()`s it onto the target and
+`fsync`s the directory. A power cut (engine off) can never leave a truncated/empty
+counter that the readers would silently reset to 0; a reader always sees the
+complete old or new file. (Plain `open(path,"w")` truncates before writing — that
+window is the bug this avoids.) The temp name carries the **pid** so that if a
+stray second collector ever runs (manual test run, or a restart that left the old
+process alive), the two writers don't share one `.tmp` and race — one renaming it
+away makes the other's `os.replace()` fail with ENOENT. The temp is also unlinked
+if the write/rename fails partway, so a failed write leaves no stray file.
 
 ## Sync
 - Fires 5 min after boot via systemd timer, then every 5 min
@@ -196,7 +200,8 @@ Do NOT log: individual PID values, every poll cycle, WAL checkpoints, per-tick w
 
 ## systemd Services
 - `obd-collector.service` — Type=notify, Restart=always, RestartSec=15, WatchdogSec=60
-  - `TimeoutStartSec=300` — OBD init can take multiple retry cycles
+  - `main.py` sends `READY=1` after local init (DB + queue) and does **not** block on the OBD link — `collector.start()` opens the async connection but its monitor thread reconnects in the background, so the unit reaches `active` within seconds even when parked. Blocking on the dongle before `READY=1` (the old behaviour) kept the unit `activating` until `TimeoutStartSec` while parked, then systemd killed+restarted it every ~5 min and the killed processes piled up and contended for `/dev/rfcomm0` — which then stopped any of them from connecting at all.
+  - `TimeoutStartSec=300` — safety margin for the worst-case boot before `READY=1`: USB mount wait (≤120s) + the bounded initial connect attempt
   - `TimeoutStopSec=60` — covers 30s OBD timeout + 15s queue drain before SIGKILL
   - `StartLimitBurst`/`StartLimitIntervalSec` live in **`[Unit]`**, not `[Service]` — systemd ≥v230 silently ignores them in `[Service]` (defeating the crash-loop guard)
 - `obd-sync.service` — Type=oneshot, TimeoutStartSec=120

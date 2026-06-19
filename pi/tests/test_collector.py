@@ -84,6 +84,23 @@ class TestStartStop:
         c = self._make_collector()
         c.stop()  # must not raise
 
+    def test_start_starts_monitor_when_initial_connect_fails(self):
+        """A failed initial connect must NOT abort startup — the monitor still runs.
+
+        At boot the dongle is usually unreachable (engine off → no rfcomm0). If
+        the first connect raised and that propagated, main() would die before
+        READY=1 and trip the systemd start-timeout/restart loop. start() must
+        swallow the failure and start the reconnect monitor regardless.
+        """
+        c = self._make_collector()
+        with patch.object(c, "_connect_and_watch", side_effect=OSError("no rfcomm0")):
+            c.start()
+            try:
+                assert c.is_monitor_alive()      # monitor thread launched anyway
+                assert c._async_conn is None     # no half-open connection left
+            finally:
+                c.stop()
+
 
 # ---------------------------------------------------------------------------
 # _make_callback() — buffer accumulation and combined-row flush logic

@@ -33,9 +33,11 @@ ExecStart=/home/balu/project300k/pi/venv/bin/python src/main.py
 Restart=always
 RestartSec=15
 WatchdogSec=60
-# OBD protocol detection can take 60-120s per attempt if the OBDLink is slow
-# to respond. Default TimeoutStartSec=90s would kill the service before READY=1
-# is sent on the first boot. 300s allows for multiple retries before giving up.
+# main.py sends READY=1 after local init (DB + queue) and does NOT block on the
+# OBD link — the collector's monitor thread connects in the background, so the
+# unit reaches 'active' within seconds even when parked (engine off, no rfcomm0).
+# 300s is a safety margin covering the worst-case boot before READY: the USB
+# mount wait (up to 120s) plus the bounded initial connect attempt.
 TimeoutStartSec=300
 # TimeoutStopSec must exceed the OBD connection timeout (30s) plus queue drain
 # time (up to 15s) so systemd does not send SIGKILL before shutdown completes.

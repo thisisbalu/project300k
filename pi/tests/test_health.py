@@ -7,6 +7,41 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
+# _atomic_write()
+# ---------------------------------------------------------------------------
+
+class TestAtomicWrite:
+    def test_temp_name_is_pid_unique(self, tmp_path):
+        """The temp file must carry the pid so a second writer can't collide."""
+        from health import _atomic_write
+        path = str(tmp_path / "counter")
+        captured = []
+        real_replace = os.replace
+
+        def capture_replace(src, dst):
+            captured.append(src)
+            real_replace(src, dst)
+
+        with patch("os.replace", side_effect=capture_replace):
+            _atomic_write(path, "7")
+
+        assert captured == [f"{path}.{os.getpid()}.tmp"]
+        with open(path) as f:
+            assert f.read() == "7"
+
+    def test_temp_removed_when_rename_fails(self, tmp_path):
+        """A failed write/rename must not leave the temp file behind."""
+        from health import _atomic_write
+        path = str(tmp_path / "counter")
+
+        with patch("os.replace", side_effect=OSError("rename failed")):
+            with pytest.raises(OSError):
+                _atomic_write(path, "7")
+
+        assert not os.path.exists(f"{path}.{os.getpid()}.tmp")
+
+
+# ---------------------------------------------------------------------------
 # increment_restart_count()
 # ---------------------------------------------------------------------------
 

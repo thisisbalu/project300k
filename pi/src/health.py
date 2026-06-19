@@ -59,18 +59,33 @@ def _atomic_write(path: str, value: str) -> None:
     onto the target makes the swap atomic — a reader sees either the old file
     or the complete new one, never a truncated one. The directory is fsync'd so
     the rename itself survives the power cut.
+
+    The temp file is named per-pid (`<path>.<pid>.tmp`) rather than a shared
+    `<path>.tmp`. The system runs a single collector, but if a stray second
+    instance ever exists (a manual run during testing, or a restart that left
+    the old process alive), two writers sharing one temp name race: one renames
+    it onto the target and the other's os.replace() then fails with ENOENT on a
+    file that has already moved. A per-pid temp keeps the writers independent.
     """
-    tmp = f"{path}.tmp"
-    with open(tmp, "w") as f:
-        f.write(value)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp, path)
-    dir_fd = os.open(os.path.dirname(path), os.O_RDONLY)
+    tmp = f"{path}.{os.getpid()}.tmp"
     try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
+        with open(tmp, "w") as f:
+            f.write(value)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+        dir_fd = os.open(os.path.dirname(path), os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        # Don't leave a stray temp behind if the write or rename failed partway.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def increment_restart_count() -> int:

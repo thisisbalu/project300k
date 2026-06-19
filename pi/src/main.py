@@ -12,8 +12,10 @@ Boot sequence:
     4. Increment persistent restart counter on USB drive
     5. Open SQLite connection, initialise schema, repair orphaned trips
     6. Start QueueWriter (background thread)
-    7. Connect to OBDLink MX+ (retries every 15s until success)
-    8. Start TripManager and Collector
+    7. Start TripManager and Collector — the Collector opens its own obd.Async
+       and its monitor thread reconnects until the dongle responds, so this
+       never blocks waiting for the car
+    8. Signal READY=1 to systemd (before the OBD link is necessarily up)
     9. Enter watchdog ping loop (pings systemd every 30s)
 
 Shutdown (SIGTERM or KeyboardInterrupt):
@@ -203,7 +205,6 @@ def main() -> None:
     queue_writer.start()
 
     obd_connection = OBDConnection()
-    obd_connection.connect()
 
     trip_manager = TripManager(queue_writer)
     # Collector opens its own obd.Async connection — obd.Async is a subclass
@@ -215,13 +216,24 @@ def main() -> None:
     # for DTC scans at trip boundaries, which stops the async loop to avoid
     # byte-race contention on /dev/rfcomm0 with the polling thread.
     trip_manager.set_dtc_query(collector.query_sync)
+    # collector.start() opens the async connection and starts the monitor thread.
+    # It does NOT block waiting for the dongle: if the link is down (engine off →
+    # no /dev/rfcomm0) the monitor reconnects in the background every 10s until
+    # the car starts. We deliberately do NOT pre-verify the link here.
     collector.start()
 
-    # Notify systemd that initialisation is complete and the service is ready.
-    # Required because obd-collector.service uses Type=notify — systemd waits
-    # for this signal before marking the service as active or starting dependents.
+    # Signal readiness BEFORE the OBD link is necessarily up. obd-collector.service
+    # is Type=notify, so until READY=1 arrives the unit stays 'activating'. The
+    # dongle is usually unreachable at boot (engine off → no /dev/rfcomm0), and
+    # connecting can take anywhere from seconds to hours (until the next drive).
+    # Blocking on the link here would hold the unit in 'activating' past
+    # TimeoutStartSec, after which systemd kills and restarts it every ~5 min
+    # while parked — and the killed processes can pile up and contend for
+    # /dev/rfcomm0, which is what stops any of them from ever connecting. Going
+    # ready now keeps a single process 'active (running)' and watchdog-fed while
+    # the monitor thread connects the moment the dongle responds.
     notifier.notify("READY=1")
-    logger.info("obd-collector ready")
+    logger.info("obd-collector ready — OBD link will connect when the dongle responds")
 
     # Main watchdog loop — pings systemd every 30s.
     # WatchdogSec=60s in the service file — if no ping arrives within 60s,
