@@ -1,8 +1,9 @@
 # Project 300K — Backend (Part 2, foundation slice)
 
 Home-server API that receives synced OBD data from the in-car Pi and writes it to
-PostgreSQL. This is the **foundation slice**: PostgreSQL schema + migrations + the
-Go `/sync` API + tests. Grafana, Claude API analysis, alerting, and backup are
+PostgreSQL, plus Grafana dashboards over the tailnet. Built so far: PostgreSQL
+schema + migrations + the Go `/sync` API + tests, derived distance/odometer views,
+and provisioned Grafana dashboards. Claude API analysis, alerting, and backup are
 deferred to follow-up work.
 
 ## Contract (fixed by the Pi)
@@ -28,12 +29,20 @@ internal/db/       pgxpool + embedded migration runner
 internal/api/      routes, bearer auth, /sync + /healthz handlers
 internal/store/    table/column allowlist + multi-row INSERT builder
 migrations/        NNNN_*.sql (embedded into the binary)
+grafana/           provisioned datasource + dashboards (mounted into the container)
 ```
 
 Schema mirrors the Pi's SQLite schema (`pi/src/storage.py`) with two deliberate
 deviations: no `synced` column (Pi-local bookkeeping), and Postgres-native types
-(`uuid`, `timestamptz`, `integer`, `double precision`). `distance_km` is left for
-later server-side computation.
+(`uuid`, `timestamptz`, `integer`, `double precision`).
+
+`0002_views.sql` adds domain views (`engine`, `thermals`, `fueling`, `boost`,
+`electrical`, `transmission`, `misfires`) that Grafana reads. `0003_trip_distance.sql`
+derives distance the vehicle never reports: this Bronco exposes no odometer PID, so
+the Pi leaves `distance_km` NULL and `trip_summary` integrates `speed_kmh` over
+`obd_1s` (trapezoidal, 5 s gap cap so a BT reconnect can't add phantom km).
+`lifetime_distance` is the running total since logging began — the 300k progress
+number. Both are plain views (no refresh to orchestrate).
 
 ## Configuration
 
@@ -90,7 +99,24 @@ make logs                # follow api logs
 make down                # stop (data in pgdata is preserved)
 ```
 
-### Connect the Pi over Tailscale
+### Grafana dashboards
+
+Grafana runs as a fourth container sharing the tailscale namespace, so its UI is on
+the laptop's **tailnet IP at :3000** — reachable from your phone or the Pi over the
+private mesh (and `127.0.0.1:3000` locally). Set `GF_ADMIN_PASSWORD` in `.env`; log
+in as `admin`.
+
+```bash
+make grafana-url     # print the local + tailnet URLs
+make grafana-logs    # follow grafana logs
+```
+
+The Postgres datasource and dashboards are **provisioned from `grafana/`** (checked
+into git), so they rebuild identically on the real server. Dashboards (longevity-core
+first): **Overview** (300k progress gauge + per-trip distance + recent trips),
+**Thermals**, **Electrical** (battery/fuel), **Transmission**, **Misfires**. The
+Overview's `Odometer baseline (km)` textbox is where you enter the car's real odometer
+reading on day one — it's added to the logged distance for the true odometer.
 
 One-time tailnet setup:
 
@@ -105,7 +131,7 @@ One-time tailnet setup:
    TAILSCALE_IP=<laptop-tailnet-ip>
    API_KEY=<same value as the backend .env API_KEY>
    ```
-   then `jarvis restart`. The Pi will sync to the laptop on its next 5-min cycle.
+   then `jarvis restart`. The Pi syncs to the laptop once per drive (boot-triggered).
 
 > The laptop must stay **awake, plugged in, online, with Docker running** while it serves.
 > `caffeinate -s` helps. If it sleeps, syncs just pause — no data is lost; the Pi keeps its
@@ -132,5 +158,5 @@ and auth/unknown-table handling.
 
 ## Deferred (follow-up plans)
 
-Grafana datasource + dashboards · Claude API analysis · ntfy/email alerts ·
-`pg_dump` + rclone backup · server provisioning · `distance_km` computation.
+Claude API analysis · ntfy/email alerts · `pg_dump` + rclone backup ·
+server provisioning · more dashboards (Engine, Boost, Fueling, Pi health).

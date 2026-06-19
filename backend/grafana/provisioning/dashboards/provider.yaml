@@ -1,0 +1,15 @@
+# Loads every dashboard JSON under /var/lib/grafana/dashboards (mounted from
+# backend/grafana/dashboards). Dashboards are version-controlled and reprovisioned
+# on container start, so they lift-and-shift to the real server with the stack.
+apiVersion: 1
+
+providers:
+  - name: project300k
+    orgId: 1
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

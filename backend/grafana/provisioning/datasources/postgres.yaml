@@ -1,0 +1,21 @@
+# Provisioned PostgreSQL datasource. Grafana shares the tailscale netns with db,
+# so Postgres is reached on loopback. Password comes from PG_PASSWORD in the
+# container env (set from .env's DB_PASSWORD) — never hard-coded here.
+apiVersion: 1
+
+datasources:
+  - name: project300k
+    uid: project300k
+    type: postgres
+    access: proxy
+    url: 127.0.0.1:5432
+    user: app
+    database: project300k
+    isDefault: true
+    editable: false
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: false
+    secureJsonData:
+      password: ${PG_PASSWORD}

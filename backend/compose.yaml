@@ -37,9 +37,11 @@ services:
       timeout: 5s
       retries: 20
     ports:
-      # Local dev access to the api (the sidecar owns the shared namespace's ports).
-      # Tailnet access to :8080 is independent of this published mapping.
+      # Local dev access to the api + Grafana (the sidecar owns the shared
+      # namespace's ports). Tailnet access to :8080/:3000 is independent of these
+      # published mappings — both are reachable on the laptop's tailnet IP.
       - "${BIND_ADDR:-127.0.0.1}:8080:8080"
+      - "${BIND_ADDR:-127.0.0.1}:3000:3000"
 
   db:
     image: postgres:16
@@ -78,6 +80,36 @@ services:
       API_KEY: ${API_KEY:?set API_KEY in .env}
       LISTEN_ADDR: 0.0.0.0:8080
 
+  grafana:
+    image: grafana/grafana:11.3.0
+    restart: unless-stopped
+    # Share the tailscale namespace: reaches db on loopback, and its UI is served
+    # on the laptop's tailnet IP at :3000 (phone/Pi over the private mesh).
+    network_mode: "service:tailscale"
+    depends_on:
+      tailscale:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD:?set GF_ADMIN_PASSWORD in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # Consumed by the provisioned Postgres datasource (grafana/provisioning).
+      PG_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
 volumes:
   pgdata:
   tailscale-state:
+  grafana-data:

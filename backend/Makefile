@@ -8,7 +8,7 @@ DEV_DB ?= project300k_dev
 TEST_DB ?= project300k_test
 
 .PHONY: run build vet test test-int createdb dropdb createtestdb tidy \
-        up down logs ps psql ts-status ts-ip
+        up down logs ps psql ts-status ts-ip grafana-logs grafana-url
 
 run: ## Run the server (applies migrations on startup)
 	go run ./cmd/server
@@ -61,3 +61,10 @@ ts-status: ## Show the Tailscale sidecar status (node + tailnet peers)
 
 ts-ip: ## Print this laptop's tailnet IP (point the Pi's API_URL/TAILSCALE_IP here)
 	docker compose exec tailscale tailscale ip -4
+
+grafana-logs: ## Follow the grafana container logs
+	docker compose logs -f grafana
+
+grafana-url: ## Print the Grafana URLs (local + tailnet)
+	@echo "local:  http://127.0.0.1:3000"
+	@echo "tailnet: http://$$(docker compose exec -T tailscale tailscale ip -4 | head -n1):3000"
