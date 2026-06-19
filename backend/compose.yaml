@@ -109,6 +109,35 @@ services:
       timeout: 5s
       retries: 12
 
+  backup:
+    # postgres:16 so pg_dump matches the db server version. Shares the db's
+    # network namespace to reach it on loopback. Writes dumps to BACKUP_DIR
+    # (the iCloud folder on the Mac now; a local dir + rclone on the server later).
+    image: postgres:16
+    restart: unless-stopped
+    network_mode: "service:tailscale"
+    depends_on:
+      tailscale:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: 127.0.0.1
+      PGPORT: "5432"
+      PGUSER: app
+      PGDATABASE: project300k
+      PGPASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      TZ: ${TZ:-UTC}
+      BACKUP_AT: ${BACKUP_AT:-03:00}
+      KEEP_DAILY: ${KEEP_DAILY:-7}
+      KEEP_WEEKLY: ${KEEP_WEEKLY:-4}
+    entrypoint: ["/bin/sh", "/usr/local/bin/backup.sh"]
+    volumes:
+      - ./scripts/backup.sh:/usr/local/bin/backup.sh:ro
+      - type: bind
+        source: ${BACKUP_DIR:?set BACKUP_DIR in .env}
+        target: /backups
+
 volumes:
   pgdata:
   tailscale-state:

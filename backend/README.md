@@ -137,12 +137,46 @@ One-time tailnet setup:
 > `caffeinate -s` helps. If it sleeps, syncs just pause — no data is lost; the Pi keeps its
 > backlog and retries.
 
+### Backups
+
+A `backup` container (postgres:16, so `pg_dump` matches the server) runs a daily
+dump with rotation. It's deliberately split into two halves so the server move is
+trivial: the **dump job never changes**, only **where the folder syncs**.
+
+- **Make the dump** — `pg_dump -Fc` (compressed custom format) → `BACKUP_DIR/daily/`,
+  keeping `KEEP_DAILY` (7) days; Monday dumps are promoted to `weekly/`, keeping
+  `KEEP_WEEKLY` (4). A row-count fingerprint **skips dumps on days nothing synced**
+  (car didn't move), but forces one at least every `FORCE_AFTER_DAYS` (7).
+- **Ship it off-box** — `BACKUP_DIR` is bind-mounted from the host:
+  - **Now (Mac):** point `BACKUP_DIR` at an **iCloud Drive** folder → dumps sync off
+    the laptop automatically. *That* is the real off-box copy.
+  - **Later (Linux server):** point `BACKUP_DIR` at a local dir and add an `rclone`
+    push to cloud (e.g. Backblaze B2). The dump job is byte-for-byte the same.
+
+```bash
+make backup-now     # force a dump right now (ignores the unchanged-skip)
+make backup-ls      # list dumps (daily + weekly)
+make backup-logs    # follow the backup container
+```
+
+**Restore** a dump into the running db (replaces current data):
+
+```bash
+DUMP="$BACKUP_DIR/daily/project300k_YYYYMMDDThhmmssZ.dump"
+cat "$DUMP" | docker compose exec -T db pg_restore -U app -d project300k --clean --if-exists --no-owner
+```
+
+> iCloud may evict (dataless-stub) old dumps to save space; they re-download on
+> access, so restores still work. Verified: a dump restores cleanly into a throwaway
+> db with matching row counts.
+
 ### Moving to the real home server later
 
 Same folder, same command — install Docker on the server, copy `backend/`, set its own
 `.env` (incl. its own `TS_AUTHKEY`), `docker compose up -d --build`. Only the setup moves;
-the server's DB starts empty. (Carrying the two months of laptop data over is a deliberate
-`pg_dump`/restore — see the deferred backup plan.)
+the server's DB starts empty. **Carry the data over** by copying the newest dump from
+`BACKUP_DIR` to the server and `pg_restore`-ing it into the fresh `project300k` (see
+**Backups**). On the server, switch `BACKUP_DIR` to a local dir + add an `rclone` push.
 
 ## Test
 
@@ -158,5 +192,5 @@ and auth/unknown-table handling.
 
 ## Deferred (follow-up plans)
 
-Claude API analysis · ntfy/email alerts · `pg_dump` + rclone backup ·
-server provisioning · more dashboards (Engine, Boost, Fueling, Pi health).
+Claude API analysis · ntfy/email alerts · rclone push for backups (on the real
+server) · server provisioning · more dashboards (Engine, Boost, Fueling, Pi health).

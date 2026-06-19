@@ -8,7 +8,8 @@ DEV_DB ?= project300k_dev
 TEST_DB ?= project300k_test
 
 .PHONY: run build vet test test-int createdb dropdb createtestdb tidy \
-        up down logs ps psql ts-status ts-ip grafana-logs grafana-url
+        up down logs ps psql ts-status ts-ip grafana-logs grafana-url \
+        backup-now backup-ls backup-logs
 
 run: ## Run the server (applies migrations on startup)
 	go run ./cmd/server
@@ -68,3 +69,12 @@ grafana-logs: ## Follow the grafana container logs
 grafana-url: ## Print the Grafana URLs (local + tailnet)
 	@echo "local:  http://127.0.0.1:3000"
 	@echo "tailnet: http://$$(docker compose exec -T tailscale tailscale ip -4 | head -n1):3000"
+
+backup-now: ## Trigger an immediate database dump (forces one even if data is unchanged)
+	docker compose exec -T -e FORCE_AFTER_DAYS=0 backup /bin/sh /usr/local/bin/backup.sh once
+
+backup-ls: ## List the dumps in BACKUP_DIR (newest first)
+	docker compose exec -T backup /bin/sh -c 'ls -lht /backups/daily /backups/weekly 2>/dev/null'
+
+backup-logs: ## Follow the backup container logs
+	docker compose logs -f backup
