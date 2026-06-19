@@ -9,8 +9,12 @@
 # ExecStopPost then runs `nmcli device disconnect wlan0`, which drops the link
 # AND suppresses autoconnect until the next reboot. So the Pi syncs once, stays
 # off for the rest of the drive (no connect/disconnect flapping), and reconnects
-# proactively on the next boot. (`+` runs it as root regardless of User=; `-`
-# ignores failure if wlan0 is already disconnected.)
+# proactively on the next boot. (`+` runs it as root regardless of User=.)
+#
+# The disconnect is SKIPPED when /run/obd-keep-online exists — `jarvis net hold`
+# creates it so you can SSH in and debug without being dropped; `jarvis net
+# release` removes it. /run is tmpfs, so the hold auto-clears on reboot (you can
+# never accidentally leave the hotspot up forever).
 #
 # Type=simple + no Restart=: exactly one sync attempt-loop per boot. The old
 # obd-sync.timer (every 5 min) is removed — this replaces it.
@@ -25,7 +29,7 @@ Type=simple
 User=balu
 WorkingDirectory=/home/balu/project300k/pi
 ExecStart=/home/balu/project300k/pi/venv/bin/python src/sync.py
-ExecStopPost=+-/usr/bin/nmcli device disconnect wlan0
+ExecStopPost=+/bin/sh -c '[ -f /run/obd-keep-online ] || /usr/bin/nmcli device disconnect wlan0'
 Environment=PYTHONUNBUFFERED=1
 StandardOutput=journal
 StandardError=journal

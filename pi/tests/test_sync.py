@@ -390,19 +390,23 @@ class TestRun:
                 run()
         mock_pass.assert_not_called()
 
-    def test_run_returns_after_first_successful_pass(self):
+    def test_run_holds_grace_then_final_pass_then_returns(self):
         from sync import run
+        from config import config
+        # First pass succeeds → hold the link for SYNC_GRACE_S → final drain → exit.
         with patch("sync._check_network", return_value=True), \
              patch("sync._sync_pass", return_value=True) as mock_pass, \
-             patch("sync.time.sleep", side_effect=_StopLoop):
-            run()  # returns cleanly, no sleep reached
-        mock_pass.assert_called_once()
+             patch("sync.time.sleep") as mock_sleep:
+            run()
+        assert mock_pass.call_count == 2  # initial drain + final grace-window drain
+        mock_sleep.assert_called_once_with(config.SYNC_GRACE_S)  # only the grace sleep
 
     def test_run_retries_after_incomplete_pass_then_succeeds(self):
         from sync import run
+        # incomplete → retry → success → grace → final drain.
         with patch("sync._check_network", return_value=True), \
-             patch("sync._sync_pass", side_effect=[False, True]) as mock_pass, \
+             patch("sync._sync_pass", side_effect=[False, True, True]) as mock_pass, \
              patch("sync.time.sleep") as mock_sleep:
             run()
-        assert mock_pass.call_count == 2  # failed pass → retry → success → exit
-        mock_sleep.assert_called_once()   # slept once between the two passes
+        assert mock_pass.call_count == 3   # failed, success, final grace drain
+        assert mock_sleep.call_count == 2  # poll-retry sleep + grace sleep

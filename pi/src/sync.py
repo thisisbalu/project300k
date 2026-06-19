@@ -93,10 +93,11 @@ def run() -> None:
     The Pi stays in NetworkManager autoconnect mode, so it associates with the
     hotspot whenever it is available at any point during the drive. This loop
     waits for connectivity, then drains the whole backlog. On the first fully
-    successful drain it returns (exit 0); the unit's ExecStopPost then runs
-    `nmcli device disconnect wlan0`, dropping the link and suppressing autoconnect
-    until the next reboot — so the Pi syncs once per drive and stays off after,
-    reconnecting proactively next boot.
+    successful drain it holds the link up for SYNC_GRACE_S — a window for trailing
+    data and for SSHing in to debug — does a final drain, then returns (exit 0).
+    The unit's ExecStopPost then disconnects wlan0 (unless a hold flag is set —
+    see jarvis net hold), suppressing autoconnect until the next reboot, so the Pi
+    syncs once per drive and reconnects proactively next boot.
 
     If connectivity never appears, the loop keeps polling cheaply until the car
     powers the Pi off (the power cycle bounds it). A pass that fails partway
@@ -110,7 +111,16 @@ def run() -> None:
     while True:
         if _check_network():
             if _sync_pass():
-                logger.info("Sync complete for this drive — releasing the link")
+                # Keep the link up briefly: catches data generated during the
+                # rest of the drive and gives a window to SSH in before the
+                # post-sync disconnect. `jarvis net hold` extends this open-ended.
+                logger.info(
+                    f"Synced — holding link {config.SYNC_GRACE_S}s "
+                    "for trailing data / SSH access"
+                )
+                time.sleep(config.SYNC_GRACE_S)
+                _sync_pass()  # final best-effort drain of grace-window data
+                logger.info("Grace elapsed — releasing the link")
                 return
             logger.warning(f"Sync pass incomplete — retrying in {config.SYNC_POLL_S}s")
         time.sleep(config.SYNC_POLL_S)

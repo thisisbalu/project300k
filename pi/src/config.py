@@ -15,6 +15,9 @@ Optional values (defaults shown):
     SYNC_BATCH_SIZE  — 500 rows per POST
     SYNC_POLL_S      — 15 (seconds between connectivity polls / pass retries
                        in the once-per-drive sync loop)
+    SYNC_GRACE_S     — 300 (after the first successful drain, hold the link up
+                       this long — trailing-data window + SSH access — then do a
+                       final sync and disconnect)
     DB_PATH          — /mnt/usb/data/obd.db
     LOG_PATH         — /mnt/usb/logs/obd.log
 
@@ -79,6 +82,7 @@ class Config:
     OBD_PORT: str
     SYNC_BATCH_SIZE: int
     SYNC_POLL_S: int
+    SYNC_GRACE_S: int
     DB_PATH: str
     LOG_PATH: str
     LED_ENABLED: bool
@@ -189,6 +193,7 @@ def _load() -> Config:
         OBD_PORT=os.environ.get("OBD_PORT", "/dev/rfcomm0"),
         SYNC_BATCH_SIZE=batch_size,
         SYNC_POLL_S=_env_int("SYNC_POLL_S", 15),
+        SYNC_GRACE_S=_env_int("SYNC_GRACE_S", 300),
         DB_PATH=os.environ.get("DB_PATH", "/mnt/usb/data/obd.db"),
         LOG_PATH=os.environ.get("LOG_PATH", "/mnt/usb/logs/obd.log"),
         LED_ENABLED=_env_bool("LED_ENABLED", True),

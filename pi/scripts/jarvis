@@ -325,11 +325,22 @@ case "$cmd" in
         ;;
 
     net)
-        # Hotspot/wlan0 control. After a drive's one sync, obd-sync.service runs
-        # `nmcli device disconnect wlan0`, which drops the link and suppresses
-        # autoconnect until reboot. Use `jarvis net up` to re-open an SSH window;
-        # `jarvis net down` to close it again.
+        # Hotspot/wlan0 control. After a drive's one sync, obd-sync.service drops
+        # wlan0 (suppressing autoconnect until reboot) — UNLESS the hold flag
+        # /run/obd-keep-online is set. To debug remotely: SSH in during the
+        # post-sync grace window, then `jarvis net hold` to stay online; `jarvis
+        # net release` when done (or just reboot — the flag is on tmpfs).
+        HOLD_FLAG=/run/obd-keep-online
         case "${2:-status}" in
+            hold)
+                sudo touch "$HOLD_FLAG"
+                sudo nmcli device connect wlan0 >/dev/null 2>&1 || true
+                _ok "Hold ON — link will NOT be auto-disconnected (clears on reboot or 'jarvis net release')"
+                ;;
+            release)
+                sudo rm -f "$HOLD_FLAG"
+                _ok "Hold OFF — normal once-per-drive disconnect resumes"
+                ;;
             up)
                 sudo nmcli device connect wlan0
                 _ok "wlan0 connect requested (autoconnect re-enabled until reboot)"
@@ -339,11 +350,12 @@ case "$cmd" in
                 _ok "wlan0 disconnected (autoconnect suppressed until reboot)"
                 ;;
             status)
+                if [ -f "$HOLD_FLAG" ]; then _ok "Hold is ON (auto-disconnect disabled)"; else echo "Hold is off"; fi
                 nmcli device status
                 ;;
             *)
                 _err "Unknown net subcommand: $2"
-                echo "Usage: jarvis net [up|down|status]"
+                echo "Usage: jarvis net [hold|release|up|down|status]"
                 exit 1
                 ;;
         esac
@@ -464,7 +476,9 @@ case "$cmd" in
         echo -e "${BOLD}System${RESET}"
         echo "  jarvis health            CPU temp, memory, disk, uptime"
         echo "  jarvis bt                Bluetooth and RFCOMM status"
-        echo "  jarvis net [up|down|status]  Open/close the hotspot link (SSH window after a drive's sync)"
+        echo "  jarvis net hold          Keep wlan0 up for debugging (disables post-sync disconnect)"
+        echo "  jarvis net release       Resume normal once-per-drive disconnect"
+        echo "  jarvis net [up|down|status]  Manually open/close/show the hotspot link"
         echo "  jarvis update            git pull + restart collector"
         ;;
 
