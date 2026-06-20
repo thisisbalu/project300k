@@ -17,13 +17,14 @@ const (
 
 // Trend is one labelled series rendered as a sparkline.
 type Trend struct {
-	Label     string
-	Unit      string // "°C" | "V" | "km/h" | "km" | "rpm"
-	Values    []float64
-	Color     string
-	Threshold float64 // >0 draws a dashed red-flag reference line
-	Bars      bool    // render as mini bars instead of a line
-	Stat      string  // badge value: "" / "last" (default), "max", "min"
+	Label          string
+	Unit           string // "°C" | "V" | "km/h" | "km" | "rpm"
+	Values         []float64
+	Color          string
+	Threshold      float64 // >0 draws a dashed red-flag reference line
+	ThresholdFloor bool    // true = danger is BELOW the line (a floor, e.g. oil pressure)
+	Bars           bool    // render as mini bars instead of a line
+	Stat           string  // badge value: "" / "last" (default), "max", "min"
 
 	// Optional second overlaid series (e.g. boost desired vs actual). When set,
 	// both lines share one scale and a small legend names them.
@@ -100,7 +101,7 @@ func (t Trend) SVG() string {
 	if len(t.Values2) > 0 {
 		return spark2(t.Values, t.Color, t.Values2, t.Color2)
 	}
-	return spark(t.Values, t.Color, t.Threshold)
+	return spark(t.Values, t.Color, t.Threshold, t.ThresholdFloor)
 }
 
 func downsample(v []float64, max int) []float64 {
@@ -129,7 +130,7 @@ func minMax(v []float64) (float64, float64) {
 	return mn, mx
 }
 
-func spark(vals []float64, color string, threshold float64) string {
+func spark(vals []float64, color string, threshold float64, floor bool) string {
 	if len(vals) == 0 {
 		return emptySpark()
 	}
@@ -161,6 +162,16 @@ func spark(vals []float64, color string, threshold float64) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, `<svg class="spark" viewBox="0 0 %g %g" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">`, sparkW, sparkH)
+	// Faint danger zone on the bad side of the threshold (below it for a floor,
+	// above it for a ceiling) — so the line crossing into red always reads as bad.
+	if threshold > 0 {
+		ty := yat(threshold)
+		dy, dh := 0.0, ty // ceiling: danger above the line (toward the top)
+		if floor {
+			dy, dh = ty, sparkH-ty // floor: danger below the line (toward the bottom)
+		}
+		fmt.Fprintf(&b, `<rect class="spark-danger" x="0" y="%.1f" width="%g" height="%.1f"/>`, dy, sparkW, dh)
+	}
 	fmt.Fprintf(&b, `<polygon class="spark-fill" style="fill:%s" points="%.1f,%.1f %s %.1f,%.1f"/>`,
 		color, xat(0), sparkH, strings.Join(pts, " "), xat(n-1), sparkH)
 	if threshold > 0 {

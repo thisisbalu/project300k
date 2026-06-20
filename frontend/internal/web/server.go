@@ -117,6 +117,9 @@ func (s *Server) overviewTrends(ctx context.Context) []views.Trend {
 		out = append(out, views.Trend{
 			Label: sp.label, Unit: sp.unit, Values: vals,
 			Color: sp.color, Threshold: sp.thr, Bars: sp.bars, Stat: sp.stat,
+			// A thresholded card badged by its minimum is a floor (oil pressure):
+			// danger is below the line, not above.
+			ThresholdFloor: sp.thr > 0 && sp.stat == "min",
 		})
 	}
 	return out
@@ -162,16 +165,17 @@ func (s *Server) tripCurves(ctx context.Context, id string) []views.Trend {
 	type spec struct {
 		label, unit, color string
 		thr                float64
+		floor              bool // danger below the line (oil pressure)
 		fn                 func(context.Context, string) ([]float64, error)
 	}
 	specs := []spec{
-		{"Coolant", "°C", "#d22f2f", 110, s.q.TripCurveCoolant},
-		{"Transmission", "°C", "#c77700", 120, s.q.TripCurveTrans},
-		{"Speed", "km/h", "#1ca54c", 0, s.q.TripCurveSpeed},
-		{"Engine RPM", "rpm", "#e0529c", 0, s.q.TripCurveRPM},
-		{"Battery", "V", "#2563eb", 0, s.q.TripCurveBattery},
-		{"Oil pressure", "kPa", "#0d9488", 200, s.q.TripCurveOilPressure},
-		{"Knock retard", "°", "#d22f2f", 6, s.q.TripCurveKnockRetard},
+		{"Coolant", "°C", "#d22f2f", 110, false, s.q.TripCurveCoolant},
+		{"Transmission", "°C", "#c77700", 120, false, s.q.TripCurveTrans},
+		{"Speed", "km/h", "#1ca54c", 0, false, s.q.TripCurveSpeed},
+		{"Engine RPM", "rpm", "#e0529c", 0, false, s.q.TripCurveRPM},
+		{"Battery", "V", "#2563eb", 0, false, s.q.TripCurveBattery},
+		{"Oil pressure", "kPa", "#0d9488", 200, true, s.q.TripCurveOilPressure},
+		{"Knock retard", "°", "#d22f2f", 6, false, s.q.TripCurveKnockRetard},
 	}
 	var out []views.Trend
 	for _, sp := range specs {
@@ -181,7 +185,7 @@ func (s *Server) tripCurves(ctx context.Context, id string) []views.Trend {
 			continue
 		}
 		// Badge shows the drive's peak, not the end-of-drive sample.
-		out = append(out, views.Trend{Label: sp.label, Unit: sp.unit, Values: vals, Color: sp.color, Threshold: sp.thr, Stat: "max"})
+		out = append(out, views.Trend{Label: sp.label, Unit: sp.unit, Values: vals, Color: sp.color, Threshold: sp.thr, ThresholdFloor: sp.floor, Stat: "max"})
 	}
 	// Boost is a dual line — actual measured against the ECU's desired target.
 	if desired, actual, err := s.q.TripCurveBoost(ctx, id); err != nil {
