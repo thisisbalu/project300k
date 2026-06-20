@@ -83,7 +83,11 @@ func TestBuildInsertShapeAndMissingKeys(t *testing.T) {
 
 func TestConflictClauseTrips(t *testing.T) {
 	got := conflictClause(UpsertTrip)
-	for _, want := range []string{"DO UPDATE", "end_time = EXCLUDED.end_time", "duration_s = EXCLUDED.duration_s"} {
+	for _, want := range []string{
+		"DO UPDATE",
+		"end_time = COALESCE(EXCLUDED.end_time, trips.end_time)",
+		"duration_s = COALESCE(EXCLUDED.duration_s, trips.duration_s)",
+	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("trips conflict clause missing %q: %s", want, got)
 		}

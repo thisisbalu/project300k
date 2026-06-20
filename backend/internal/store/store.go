@@ -90,8 +90,14 @@ func conflictClause(p ConflictPolicy) string {
 		// trips is the one mutable row — see ConflictPolicy doc and the Pi's
 		// sync.py "Idempotency / upsert contract". DO NOTHING here would swallow
 		// the trip close and leave every multi-run trip permanently open.
+		//
+		// COALESCE so a re-delivered OPEN payload (end_time/duration_s NULL,
+		// e.g. a duplicate or out-of-order retry) can never blank out a trip that
+		// already closed. A trip end is monotonic — it never legitimately reverts
+		// to NULL — so keeping the existing non-NULL value is strictly safe.
 		return "ON CONFLICT (id) DO UPDATE SET " +
-			"end_time = EXCLUDED.end_time, duration_s = EXCLUDED.duration_s"
+			"end_time = COALESCE(EXCLUDED.end_time, trips.end_time), " +
+			"duration_s = COALESCE(EXCLUDED.duration_s, trips.duration_s)"
 	default:
 		return "ON CONFLICT (id) DO NOTHING"
 	}

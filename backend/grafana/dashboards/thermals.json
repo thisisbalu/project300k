@@ -198,25 +198,14 @@
           "format": "table"
         }
       ],
+      "description": "Oil temperature is not yet monitored — the Mode 22 PID for this vehicle is still unknown (Portmon sweep needed on the Pi). Grey = no data, not healthy.",
       "fieldConfig": {
         "defaults": {
           "unit": "celsius",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 120
-              },
-              {
-                "color": "red",
-                "value": 135
-              }
-            ]
+          "noValue": "No data — oil temp PID not yet mapped",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "#4d4d4d"
           }
         },
         "overrides": []

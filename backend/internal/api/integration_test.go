@@ -137,6 +137,39 @@ func TestSyncRoundTrip(t *testing.T) {
 	}
 }
 
+// A re-delivered OPEN trip payload (end_time NULL) must not blank out a trip that
+// already closed — the COALESCE upsert guard.
+func TestSyncTripCloseNotReopenedByStaleOpen(t *testing.T) {
+	h, pool := testServer(t)
+
+	// Open, then close.
+	if rec := post(t, h, "trips", []map[string]any{openTripRow()}, testToken); rec.Code != http.StatusOK {
+		t.Fatalf("open: code=%d body=%s", rec.Code, rec.Body)
+	}
+	closed := openTripRow()
+	closed["end_time"] = "2026-06-17T12:30:00+00:00"
+	closed["duration_s"] = 1800
+	if rec := post(t, h, "trips", []map[string]any{closed}, testToken); rec.Code != http.StatusOK {
+		t.Fatalf("close: code=%d body=%s", rec.Code, rec.Body)
+	}
+
+	// Re-deliver the stale OPEN payload (end_time/duration_s NULL).
+	if rec := post(t, h, "trips", []map[string]any{openTripRow()}, testToken); rec.Code != http.StatusOK {
+		t.Fatalf("stale re-open: code=%d body=%s", rec.Code, rec.Body)
+	}
+
+	var endTime *string
+	var durationS *int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT end_time::text, duration_s FROM trips WHERE id=$1`, tripID).
+		Scan(&endTime, &durationS); err != nil {
+		t.Fatalf("read trip: %v", err)
+	}
+	if endTime == nil || durationS == nil || *durationS != 1800 {
+		t.Fatalf("trip was reopened by stale payload: end_time=%v duration_s=%v", endTime, durationS)
+	}
+}
+
 func TestSyncOrphanChildRejected(t *testing.T) {
 	h, pool := testServer(t)
 
