@@ -1,0 +1,31 @@
+package views
+
+import "project300k/frontend/internal/queries"
+
+// DTCLog is the full diagnostic-trouble-code history, newest first.
+templ DTCLog(dtcs []queries.DTC, demo bool) {
+	@Layout("Faults", "dtc", demo) {
+		<h1>Fault codes (DTC)</h1>
+		<p class="subtle">Diagnostic trouble codes logged from on-demand and trip-edge scans.</p>
+		if len(dtcs) == 0 {
+			<p class="empty">No fault codes ever recorded. 🎉</p>
+		} else {
+			<table class="data">
+				<thead>
+					<tr><th>When</th><th>Code</th><th>Description</th><th>Status</th><th>Trigger</th></tr>
+				</thead>
+				<tbody>
+					for _, d := range dtcs {
+						<tr>
+							<td>{ ts(d.Timestamp) }</td>
+							<td><code>{ d.Code }</code></td>
+							<td>{ str(d.Description, "—") }</td>
+							<td>{ str(d.Status, "—") }</td>
+							<td>{ str(d.ScanTrigger, "—") }</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		}
+	}
+}

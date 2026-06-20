@@ -1,0 +1,84 @@
+package views
+
+import (
+	"fmt"
+
+	"project300k/frontend/internal/queries"
+)
+
+// Trips is the trip-history list, newest first.
+templ Trips(trips []queries.Trip, demo bool) {
+	@Layout("Trips", "trips", demo) {
+		<h1>Trip history</h1>
+		if len(trips) == 0 {
+			<p class="empty">No trips recorded yet.</p>
+		} else {
+			<table class="data">
+				<thead>
+					<tr><th>When</th><th>Distance</th><th>Duration</th><th>Avg moving</th><th>Max</th></tr>
+				</thead>
+				<tbody>
+					for _, t := range trips {
+						<tr class="row-link" onclick={ goTrip(t.ID) }>
+							<td>{ tsd(t.StartTime) }</td>
+							<td>{ km1(t.DistanceKm) }</td>
+							<td>{ optDur(t.DurationS) }</td>
+							<td>{ optKmhF(t.AvgMovingKmh) }</td>
+							<td>{ optKmh(t.MaxSpeedKmh) }</td>
+						</tr>
+					}
+				</tbody>
+			</table>
+		}
+	}
+}
+
+script goTrip(id string) {
+	window.location = "/trips/" + id;
+}
+
+// TripDetail shows one trip's stats and per-trip peaks + any fault codes.
+templ TripDetail(t queries.Trip, p queries.TripPeaks, dtcs []queries.DTC, demo bool) {
+	@Layout("Trip", "trips", demo) {
+		<a class="back" href="/trips">← All trips</a>
+		<h1>
+			if t.Number != nil {
+				{ fmt.Sprintf("Trip #%d", *t.Number) }
+			} else {
+				{ "Trip" }
+			}
+		</h1>
+		<p class="subtle">{ tsd(t.StartTime) }</p>
+		<div class="grid">
+			<section class="card">
+				<h2>Summary</h2>
+				<div class="kv"><span>Distance</span><b>{ km1(t.DistanceKm) }</b></div>
+				<div class="kv"><span>Duration</span><b>{ optDur(t.DurationS) }</b></div>
+				<div class="kv"><span>Avg moving</span><b>{ optKmhF(t.AvgMovingKmh) }</b></div>
+				<div class="kv"><span>Max speed</span><b>{ optKmh(t.MaxSpeedKmh) }</b></div>
+			</section>
+			<section class="card">
+				<h2>Peaks</h2>
+				<div class="kv"><span>Coolant</span><b>{ optDeg(p.MaxCoolantC) }</b></div>
+				<div class="kv"><span>Oil</span><b>{ optDeg(p.MaxOilC) }</b></div>
+				<div class="kv"><span>Transmission</span><b>{ optDeg(p.MaxTransC) }</b></div>
+				<div class="kv"><span>Battery min/max</span><b>{ optVolts(p.MinBatteryV) } / { optVolts(p.MaxBatteryV) }</b></div>
+			</section>
+		</div>
+		<section class="card">
+			<h2>Fault codes this trip</h2>
+			if len(dtcs) == 0 {
+				<p class="empty">None — clean trip.</p>
+			} else {
+				<table class="data">
+					<thead><tr><th>Code</th><th>Description</th><th>Status</th></tr></thead>
+					<tbody>
+						for _, d := range dtcs {
+							<tr><td><code>{ d.Code }</code></td><td>{ str(d.Description, "—") }</td><td>{ str(d.Status, "—") }</td></tr>
+						}
+					</tbody>
+				</table>
+			}
+		</section>
+	}
+}

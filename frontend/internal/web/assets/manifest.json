@@ -1,0 +1,10 @@
+{
+  "name": "Project 300K",
+  "short_name": "300K",
+  "description": "Active longevity monitoring for a 2023 Bronco Sport Badlands",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f1419",
+  "theme_color": "#0f1419",
+  "icons": []
+}

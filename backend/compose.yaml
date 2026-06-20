@@ -42,6 +42,7 @@ services:
       # published mappings — both are reachable on the laptop's tailnet IP.
       - "${BIND_ADDR:-127.0.0.1}:8080:8080"
       - "${BIND_ADDR:-127.0.0.1}:3000:3000"
+      - "${BIND_ADDR:-127.0.0.1}:8090:8090"
 
   db:
     image: postgres:16
@@ -111,6 +112,25 @@ services:
       interval: 10s
       timeout: 5s
       retries: 12
+
+  web:
+    # Part 3 frontend (Go + templ + htmx, server-rendered). Shares the tailscale
+    # netns: reaches db on loopback, UI served on the laptop's tailnet IP at :8090
+    # (phone/laptop over the private mesh). Read-only against Postgres.
+    build: ../frontend
+    restart: unless-stopped
+    network_mode: "service:tailscale"
+    depends_on:
+      tailscale:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://app:${DB_PASSWORD:?set DB_PASSWORD in .env}@127.0.0.1:5432/project300k?sslmode=disable
+      LISTEN_ADDR: 0.0.0.0:8090
+      WEB_PASSWORD: ${WEB_PASSWORD:-}
+      DEMO_MODE: ${DEMO_MODE:-false}
+      ODOMETER_BASELINE_KM: ${ODOMETER_BASELINE_KM:-0}
 
   backup:
     # postgres:16 so pg_dump matches the db server version. Shares the db's

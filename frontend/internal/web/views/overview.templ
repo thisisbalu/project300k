@@ -1,0 +1,65 @@
+package views
+
+import "fmt"
+
+// Overview is the home page: 300k progress, health verdict, last trip, freshness.
+templ Overview(d PageData) {
+	@Layout("Overview", "home", d.Demo) {
+		<section class={ "verdict", "verdict-" + d.Verdict.Level }>
+			<div class="verdict-dot"></div>
+			<div>
+				<div class="verdict-title">
+					switch d.Verdict.Level {
+						case "red":
+							{ "Attention needed" }
+						case "amber":
+							{ "Worth watching" }
+						default:
+							{ "Healthy" }
+					}
+				</div>
+				<ul class="verdict-reasons">
+					for _, r := range d.Verdict.Reasons {
+						<li>{ r }</li>
+					}
+				</ul>
+			</div>
+		</section>
+		<section class="card progress-card">
+			<h2>Journey to 300,000 km</h2>
+			<div class="odo">{ km(d.OdometerKm()) }</div>
+			<div class="bar"><div class="bar-fill" style={ fmt.Sprintf("width:%.2f%%", d.ProgressPct()) }></div></div>
+			<div class="progress-meta">
+				<span>{ pct(d.ProgressPct()) } there</span>
+				<span>{ km1(d.Lifetime.TotalKm) } logged · { fmt.Sprintf("%d", d.Lifetime.TripCount) } trips</span>
+			</div>
+			if d.BaselineKm == 0 {
+				<p class="hint">Tip: set <code>ODOMETER_BASELINE_KM</code> to your dash reading on day one for a true odometer.</p>
+			}
+		</section>
+		<div class="grid">
+			<section class="card">
+				<h2>Last trip</h2>
+				if d.HasTrip {
+					<div class="kv"><span>When</span><b>{ tsd(d.LatestTrip.StartTime) }</b></div>
+					<div class="kv"><span>Distance</span><b>{ km1(d.LatestTrip.DistanceKm) }</b></div>
+					<div class="kv"><span>Duration</span><b>{ optDur(d.LatestTrip.DurationS) }</b></div>
+					<div class="kv"><span>Max speed</span><b>{ optKmh(d.LatestTrip.MaxSpeedKmh) }</b></div>
+					<a class="more" href={ templ.SafeURL("/trips/" + d.LatestTrip.ID) }>Trip details →</a>
+				} else {
+					<p class="empty">No trips recorded yet.</p>
+				}
+			</section>
+			<section class="card">
+				<h2>Sync freshness</h2>
+				if d.HasSync {
+					<div class="kv"><span>Last sync</span><b>{ ago(d.LastSync) }</b></div>
+					<div class="kv"><span>At</span><b>{ ts(d.LastSync) }</b></div>
+					<p class="hint">The Pi syncs once per drive, so this is from your last completed drive.</p>
+				} else {
+					<p class="empty">No sync recorded yet.</p>
+				}
+			</section>
+		</div>
+	}
+}

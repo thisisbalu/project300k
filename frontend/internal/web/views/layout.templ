@@ -1,0 +1,41 @@
+package views
+
+// Layout is the shared page shell: head, nav, demo banner, and the page body.
+templ Layout(title string, active string, demo bool) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta name="theme-color" content="#0f1419"/>
+			<link rel="manifest" href="/static/manifest.json"/>
+			<title>{ title } · Project 300K</title>
+			<link rel="stylesheet" href="/static/app.css"/>
+			<script src="/static/htmx.min.js"></script>
+		</head>
+		<body>
+			if demo {
+				<div class="demo-banner">DEMO DATA — synthetic, not a real vehicle</div>
+			}
+			<header class="topbar">
+				<a class="brand" href="/">🚗 Project 300K</a>
+				<nav>
+					<a href="/" class={ navClass(active, "home") }>Overview</a>
+					<a href="/trips" class={ navClass(active, "trips") }>Trips</a>
+					<a href="/dtc" class={ navClass(active, "dtc") }>Faults</a>
+				</nav>
+			</header>
+			<main>
+				{ children... }
+			</main>
+			<footer>Active longevity monitoring · 2023 Bronco Sport Badlands</footer>
+		</body>
+	</html>
+}
+
+func navClass(active, name string) string {
+	if active == name {
+		return "active"
+	}
+	return ""
+}
