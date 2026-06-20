@@ -98,8 +98,8 @@ func (s *Server) overviewTrends(ctx context.Context) []views.Trend {
 		{"Battery high / drive", "V", "#0d9488", 0, false, "", s.q.TrendBatteryMax},
 		{"Max speed / drive", "km/h", "#1ca54c", 0, false, "", s.q.TrendMaxSpeed},
 		{"Avg moving speed / drive", "km/h", "#1ca54c", 0, false, "", s.q.TrendAvgMovingSpeed},
-		{"Oil pressure low / drive", "kPa", "#0d9488", 0, false, "min", s.q.TrendOilPressureMin},
-		{"Knock retard peak / drive", "°", "#d22f2f", 0, false, "max", s.q.TrendKnockPeak},
+		{"Oil pressure low / drive", "kPa", "#0d9488", 200, false, "min", s.q.TrendOilPressureMin},
+		{"Knock retard peak / drive", "°", "#d22f2f", 6, false, "max", s.q.TrendKnockPeak},
 		{"Engine RPM peak / drive", "rpm", "#e0529c", 0, false, "", s.q.TrendRpmPeak},
 		{"Intake air peak / drive", "°C", "#7a5af5", 0, false, "", s.q.TrendIntakePeak},
 		{"Ambient temp / drive", "°C", "#0d9488", 0, false, "", s.q.TrendAmbientAvg},
@@ -168,8 +168,8 @@ func (s *Server) tripCurves(ctx context.Context, id string) []views.Trend {
 		{"Speed", "km/h", "#1ca54c", 0, s.q.TripCurveSpeed},
 		{"Engine RPM", "rpm", "#e0529c", 0, s.q.TripCurveRPM},
 		{"Battery", "V", "#2563eb", 0, s.q.TripCurveBattery},
-		{"Oil pressure", "kPa", "#0d9488", 0, s.q.TripCurveOilPressure},
-		{"Knock retard", "°", "#d22f2f", 0, s.q.TripCurveKnockRetard},
+		{"Oil pressure", "kPa", "#0d9488", 200, s.q.TripCurveOilPressure},
+		{"Knock retard", "°", "#d22f2f", 6, s.q.TripCurveKnockRetard},
 	}
 	var out []views.Trend
 	for _, sp := range specs {
