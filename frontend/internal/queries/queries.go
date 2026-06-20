@@ -105,8 +105,10 @@ type TripPeaks struct {
 	MaxKnockRetard    *float64
 	MaxBoostDesired   *float64
 	MaxBoostActual    *float64
-	MisfireTotal      int64 // sum across cylinders; 0 = clean
-	HasMisfireData    bool
+	// MisfireRatePct is misfires ÷ combustion events × 100 — drive-length
+	// independent (a long drive has more events, so a raw count would mislead).
+	// nil when the trip has no usable RPM data; 0 = a genuinely clean drive.
+	MisfireRatePct *float64
 }
 
 func (s *Store) TripByID(ctx context.Context, id string) (Trip, bool, error) {
@@ -148,18 +150,16 @@ func (s *Store) TripPeaks(ctx context.Context, id string) (TripPeaks, error) {
 		return p, err
 	}
 	// Misfire counters accumulate within a drive, so the per-cylinder max ≈ that
-	// drive's total; summing the four cylinders gives the trip's misfire count.
-	// rows>0 means the car reported misfire data (so 0 = a genuinely clean drive).
-	var rows int64
-	if err := s.pool.QueryRow(ctx,
-		`SELECT COUNT(*),
-		        COALESCE(max(misfire_acc_cyl1),0) + COALESCE(max(misfire_acc_cyl2),0)
-		      + COALESCE(max(misfire_acc_cyl3),0) + COALESCE(max(misfire_acc_cyl4),0)
-		 FROM ford_obd_20s WHERE trip_id=$1`, id).
-		Scan(&rows, &p.MisfireTotal); err != nil {
+	// drive's total. Divide by combustion events (revolutions × 2 for a 4-cyl
+	// 4-stroke; revolutions = Σrpm/60) to get a drive-length-independent rate.
+	if err := s.pool.QueryRow(ctx, `
+		SELECT (COALESCE(max(m.misfire_acc_cyl1),0)+COALESCE(max(m.misfire_acc_cyl2),0)
+		      + COALESCE(max(m.misfire_acc_cyl3),0)+COALESCE(max(m.misfire_acc_cyl4),0))
+		       / NULLIF((SELECT sum(rpm)/30.0 FROM obd_1s WHERE trip_id=$1 AND rpm IS NOT NULL), 0) * 100
+		FROM ford_obd_20s m WHERE m.trip_id=$1`, id).
+		Scan(&p.MisfireRatePct); err != nil {
 		return p, err
 	}
-	p.HasMisfireData = rows > 0
 	return p, nil
 }
 
@@ -229,12 +229,27 @@ type Verdict struct {
 func (s *Store) Health(ctx context.Context) (Verdict, error) {
 	var (
 		maxCoolant, maxTrans, maxBattery, p10Battery *float64
-		dtcCount                                     int64
+		p05Oil, maxKnock, misfireRate                *float64
+		dtcCount                                      int64
 	)
 	_ = s.pool.QueryRow(ctx, `SELECT max(coolant_temp_c) FROM obd_5s WHERE timestamp > now() - interval '3 days'`).Scan(&maxCoolant)
 	_ = s.pool.QueryRow(ctx, `SELECT max(trans_temp_c) FROM ford_obd_5s WHERE timestamp > now() - interval '3 days'`).Scan(&maxTrans)
 	_ = s.pool.QueryRow(ctx, `SELECT max(battery_v) FROM obd_30s WHERE timestamp > now() - interval '3 days'`).Scan(&maxBattery)
 	_ = s.pool.QueryRow(ctx, `SELECT percentile_cont(0.10) WITHIN GROUP (ORDER BY battery_v) FROM obd_30s WHERE timestamp > now() - interval '7 days' AND battery_v IS NOT NULL`).Scan(&p10Battery)
+	// p05 (not min) of oil pressure ignores the odd startup/idle blip — only a
+	// sustained drop pulls the 5th percentile below the 200 kPa floor.
+	_ = s.pool.QueryRow(ctx, `SELECT percentile_cont(0.05) WITHIN GROUP (ORDER BY oil_pressure_kpa) FROM ford_obd_10s WHERE timestamp > now() - interval '3 days' AND oil_pressure_kpa IS NOT NULL`).Scan(&p05Oil)
+	_ = s.pool.QueryRow(ctx, `SELECT max(knock_retard_deg) FROM ford_obd_10s WHERE timestamp > now() - interval '3 days'`).Scan(&maxKnock)
+	// Aggregate misfire rate over the window: sum each drive's misfires and
+	// combustion events separately, then divide — keeps numerator and denominator
+	// over the same drives (a window-max count over total-window events would lie).
+	_ = s.pool.QueryRow(ctx, `
+		WITH per AS (
+			SELECT t.id,
+				(SELECT sum(rpm)/30.0 FROM obd_1s o WHERE o.trip_id=t.id AND o.rpm IS NOT NULL) AS events,
+				(SELECT COALESCE(max(misfire_acc_cyl1),0)+COALESCE(max(misfire_acc_cyl2),0)+COALESCE(max(misfire_acc_cyl3),0)+COALESCE(max(misfire_acc_cyl4),0) FROM ford_obd_20s m WHERE m.trip_id=t.id) AS mis
+			FROM trips t WHERE t.start_time > now() - interval '3 days')
+		SELECT sum(mis) / NULLIF(sum(events), 0) * 100 FROM per`).Scan(&misfireRate)
 	if err := s.pool.QueryRow(ctx, `SELECT count(*) FROM dtc_events WHERE timestamp > now() - interval '3 days'`).Scan(&dtcCount); err != nil {
 		return Verdict{}, err
 	}
@@ -260,8 +275,17 @@ func (s *Store) Health(ctx context.Context) (Verdict, error) {
 	if dtcCount > 0 {
 		red("Diagnostic trouble code(s) present")
 	}
+	if p05Oil != nil && *p05Oil < 200 {
+		red("Oil pressure running low")
+	}
 	if p10Battery != nil && *p10Battery < 12.0 {
 		amber("Battery voltage running low")
+	}
+	if maxKnock != nil && *maxKnock > 6 {
+		amber("Engine pulling timing (knock)")
+	}
+	if misfireRate != nil && *misfireRate > 0.5 {
+		amber("Misfire rate elevated")
 	}
 	if len(v.Reasons) == 0 {
 		v.Reasons = append(v.Reasons, "All monitored systems within normal range")
@@ -440,6 +464,18 @@ func (s *Store) TrendKnockPeak(ctx context.Context, days int) ([]float64, error)
 	return s.floatSeries(ctx, `SELECT max(o.knock_retard_deg) FROM trips t JOIN ford_obd_10s o ON o.trip_id=t.id
 		WHERE t.start_time > now() - make_interval(days => $1)
 		GROUP BY t.id, t.start_time HAVING max(o.knock_retard_deg) IS NOT NULL ORDER BY t.start_time`, days)
+}
+
+// TrendMisfireRate is each drive's misfire rate (%) — misfires ÷ combustion
+// events — one point per drive, so drive length doesn't distort it.
+func (s *Store) TrendMisfireRate(ctx context.Context, days int) ([]float64, error) {
+	return s.floatSeries(ctx, `
+		SELECT rate FROM (
+			SELECT t.start_time,
+				(SELECT COALESCE(max(misfire_acc_cyl1),0)+COALESCE(max(misfire_acc_cyl2),0)+COALESCE(max(misfire_acc_cyl3),0)+COALESCE(max(misfire_acc_cyl4),0) FROM ford_obd_20s m WHERE m.trip_id=t.id)::float8
+				/ NULLIF((SELECT sum(rpm)/30.0 FROM obd_1s o WHERE o.trip_id=t.id AND o.rpm IS NOT NULL), 0) * 100 AS rate
+			FROM trips t WHERE t.start_time > now() - make_interval(days => $1)
+		) q WHERE rate IS NOT NULL ORDER BY start_time`, days)
 }
 
 // Per-trip curves for the trip-detail page (time-ordered samples within one trip).

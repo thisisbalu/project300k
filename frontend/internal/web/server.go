@@ -100,6 +100,7 @@ func (s *Server) overviewTrends(ctx context.Context) []views.Trend {
 		{"Avg moving speed / drive", "km/h", "#1ca54c", 0, false, "", s.q.TrendAvgMovingSpeed},
 		{"Oil pressure low / drive", "kPa", "#0d9488", 200, false, "min", s.q.TrendOilPressureMin},
 		{"Knock retard peak / drive", "°", "#d22f2f", 6, false, "max", s.q.TrendKnockPeak},
+		{"Misfire rate / drive", "%", "#7c3aed", 0.5, false, "max", s.q.TrendMisfireRate},
 		{"Engine RPM peak / drive", "rpm", "#e0529c", 0, false, "", s.q.TrendRpmPeak},
 		{"Intake air peak / drive", "°C", "#7a5af5", 0, false, "", s.q.TrendIntakePeak},
 		{"Ambient temp / drive", "°C", "#0d9488", 0, false, "", s.q.TrendAmbientAvg},

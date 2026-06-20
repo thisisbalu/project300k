@@ -182,6 +182,17 @@ func optDegRet(v *float64) string {
 	return fmt.Sprintf("%.1f°", *v)
 }
 
+// optRatePct renders a misfire rate: nil = no data, 0 = clean, else a small %.
+func optRatePct(v *float64) string {
+	if v == nil {
+		return "—"
+	}
+	if *v == 0 {
+		return "none"
+	}
+	return fmt.Sprintf("%.3f%%", *v)
+}
+
 // disk renders a free-space figure (stored in MB) as MB/GB.
 func disk(v *float64) string {
 	if v == nil {

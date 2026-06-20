@@ -157,6 +157,118 @@ groups:
               conditions:
                 - evaluator: { type: lt, params: [12.0] }
 
+      # --- Oil pressure low ----------------------------------------------------
+      - uid: p300k-oil-pressure-low
+        title: Oil pressure low
+        condition: C
+        for: 5m
+        labels:
+          severity: high
+        annotations:
+          summary: 'Oil pressure 5th-percentile is {{ index $values "B" }}kPa over 3 days (floor 200kPa, normal 290–396) — investigate.'
+        data:
+          - refId: A
+            relativeTimeRange: { from: 259200, to: 0 }
+            datasourceUid: project300k
+            model:
+              refId: A
+              datasource: { type: postgres, uid: project300k }
+              format: table
+              rawSql: "SELECT percentile_cont(0.05) WITHIN GROUP (ORDER BY oil_pressure_kpa) AS value FROM ford_obd_10s WHERE timestamp > now() - interval '3 days' AND oil_pressure_kpa IS NOT NULL"
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: B
+              conditions:
+                - evaluator: { type: lt, params: [200] }
+
+      # --- Knock retard (engine pulling timing) --------------------------------
+      - uid: p300k-knock-retard
+        title: Knock retard high
+        condition: C
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Knock retard peaked at {{ index $values "B" }}° over 3 days (watch above 6°) — check fuel quality / carbon.'
+        data:
+          - refId: A
+            relativeTimeRange: { from: 259200, to: 0 }
+            datasourceUid: project300k
+            model:
+              refId: A
+              datasource: { type: postgres, uid: project300k }
+              format: table
+              rawSql: "SELECT max(knock_retard_deg) AS value FROM ford_obd_10s WHERE timestamp > now() - interval '3 days'"
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: B
+              conditions:
+                - evaluator: { type: gt, params: [6] }
+
+      # --- Misfire rate elevated ----------------------------------------------
+      # Rate = misfires ÷ combustion events (drive-length independent). Events =
+      # revolutions × 2 for a 4-cyl 4-stroke; revolutions = Σrpm/60, so events =
+      # Σrpm/30. Per-drive sums kept aligned (numerator and denominator over the
+      # same drives). Warn at 0.5% — the ECU only sets a DTC near ~2%.
+      - uid: p300k-misfires
+        title: Misfire rate elevated
+        condition: C
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Misfire rate is {{ index $values "B" }}% over 3 days (warn above 0.5%; a DTC sets near 2%) — check plugs / coils / fuel.'
+        data:
+          - refId: A
+            relativeTimeRange: { from: 259200, to: 0 }
+            datasourceUid: project300k
+            model:
+              refId: A
+              datasource: { type: postgres, uid: project300k }
+              format: table
+              rawSql: "WITH per AS (SELECT t.id, (SELECT sum(rpm)/30.0 FROM obd_1s o WHERE o.trip_id=t.id AND o.rpm IS NOT NULL) AS events, (SELECT COALESCE(max(misfire_acc_cyl1),0)+COALESCE(max(misfire_acc_cyl2),0)+COALESCE(max(misfire_acc_cyl3),0)+COALESCE(max(misfire_acc_cyl4),0) FROM ford_obd_20s m WHERE m.trip_id=t.id) AS mis FROM trips t WHERE t.start_time > now() - interval '3 days') SELECT COALESCE(sum(mis) / NULLIF(sum(events),0) * 100, 0) AS value FROM per"
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              refId: B
+              type: reduce
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              reducer: last
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: B
+              conditions:
+                - evaluator: { type: gt, params: [0.5] }
+
       # --- New DTC fault code --------------------------------------------------
       - uid: p300k-dtc-new
         title: New DTC fault code

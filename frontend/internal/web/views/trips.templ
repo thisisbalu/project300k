@@ -79,14 +79,8 @@ templ TripDetail(t queries.Trip, p queries.TripPeaks, dtcs []queries.DTC, curves
 				</div>
 				<div class="kv"><span>Boost desired/actual</span><b>{ optPsi(p.MaxBoostDesired) } / { optPsi(p.MaxBoostActual) }</b></div>
 				<div class="kv">
-					<span>Misfires</span>
-					if !p.HasMisfireData {
-						<b>—</b>
-					} else if p.MisfireTotal == 0 {
-						<b>none</b>
-					} else {
-						<b class="warn">{ fmt.Sprintf("%d", p.MisfireTotal) }</b>
-					}
+					<span>Misfire rate</span>
+					<b class={ templ.KV("warn", p.MisfireRatePct != nil && *p.MisfireRatePct > 0.5) }>{ optRatePct(p.MisfireRatePct) }</b>
 				</div>
 			</section>
 		</div>
