@@ -67,11 +67,13 @@ func (t Trend) LastLabel() string {
 		return fmt.Sprintf("%.1f psi", v)
 	case "°":
 		return fmt.Sprintf("%.1f°", v)
-	case "%":
+	case "%mf": // misfire rate — tiny values, 3 decimals
 		if v == 0 {
 			return "0%"
 		}
 		return fmt.Sprintf("%.3f%%", v)
+	case "%ft": // fuel trim — single decimal, may be negative
+		return fmt.Sprintf("%.1f%%", v)
 	default:
 		return fmt.Sprintf("%.0f %s", v, t.Unit)
 	}

@@ -466,6 +466,14 @@ func (s *Store) TrendKnockPeak(ctx context.Context, days int) ([]float64, error)
 		GROUP BY t.id, t.start_time HAVING max(o.knock_retard_deg) IS NOT NULL ORDER BY t.start_time`, days)
 }
 
+// TrendLtftAvg is each drive's average long-term fuel trim (%) — a slow drift
+// away from 0 flags an intake leak / failing MAF / aging injectors.
+func (s *Store) TrendLtftAvg(ctx context.Context, days int) ([]float64, error) {
+	return s.floatSeries(ctx, `SELECT avg(o.ltft_pct) FROM trips t JOIN obd_5s o ON o.trip_id=t.id
+		WHERE t.start_time > now() - make_interval(days => $1)
+		GROUP BY t.id, t.start_time HAVING avg(o.ltft_pct) IS NOT NULL ORDER BY t.start_time`, days)
+}
+
 // TrendMisfireRate is each drive's misfire rate (%) — misfires ÷ combustion
 // events — one point per drive, so drive length doesn't distort it.
 func (s *Store) TrendMisfireRate(ctx context.Context, days int) ([]float64, error) {
