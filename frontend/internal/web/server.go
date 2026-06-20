@@ -77,19 +77,23 @@ func (s *Server) overviewTrends(ctx context.Context) []views.Trend {
 		label, unit, color string
 		thr                float64
 		bars               bool
+		stat               string // badge value: "" (last drive) | "max" | "min"
 		fn                 func(context.Context, int) ([]float64, error)
 	}
+	// Health cards (coolant/transmission, with red-flag thresholds) badge the
+	// 30-day worst case so the headline agrees with the verdict + threshold line;
+	// descriptive cards (speed/distance/RPM) badge the most recent drive.
 	specs := []spec{
-		{"Coolant peak / drive", "°C", "#d22f2f", 110, false, s.q.TrendCoolantPeak},
-		{"Transmission peak / drive", "°C", "#c77700", 120, false, s.q.TrendTransPeak},
-		{"Battery low / drive", "V", "#2563eb", 0, false, s.q.TrendBatteryMin},
-		{"Battery high / drive", "V", "#0d9488", 0, false, s.q.TrendBatteryMax},
-		{"Max speed / drive", "km/h", "#1ca54c", 0, false, s.q.TrendMaxSpeed},
-		{"Avg moving speed / drive", "km/h", "#1ca54c", 0, false, s.q.TrendAvgMovingSpeed},
-		{"Engine RPM peak / drive", "rpm", "#e0529c", 0, false, s.q.TrendRpmPeak},
-		{"Intake air peak / drive", "°C", "#7a5af5", 0, false, s.q.TrendIntakePeak},
-		{"Ambient temp / drive", "°C", "#0d9488", 0, false, s.q.TrendAmbientAvg},
-		{"Distance / drive", "km", "#2563eb", 0, true, s.q.TrendDistance},
+		{"Coolant peak / drive", "°C", "#d22f2f", 110, false, "max", s.q.TrendCoolantPeak},
+		{"Transmission peak / drive", "°C", "#c77700", 120, false, "max", s.q.TrendTransPeak},
+		{"Battery low / drive", "V", "#2563eb", 0, false, "min", s.q.TrendBatteryMin},
+		{"Battery high / drive", "V", "#0d9488", 0, false, "", s.q.TrendBatteryMax},
+		{"Max speed / drive", "km/h", "#1ca54c", 0, false, "", s.q.TrendMaxSpeed},
+		{"Avg moving speed / drive", "km/h", "#1ca54c", 0, false, "", s.q.TrendAvgMovingSpeed},
+		{"Engine RPM peak / drive", "rpm", "#e0529c", 0, false, "", s.q.TrendRpmPeak},
+		{"Intake air peak / drive", "°C", "#7a5af5", 0, false, "", s.q.TrendIntakePeak},
+		{"Ambient temp / drive", "°C", "#0d9488", 0, false, "", s.q.TrendAmbientAvg},
+		{"Distance / drive", "km", "#2563eb", 0, true, "", s.q.TrendDistance},
 	}
 	var out []views.Trend
 	for _, sp := range specs {
@@ -100,7 +104,7 @@ func (s *Server) overviewTrends(ctx context.Context) []views.Trend {
 		}
 		out = append(out, views.Trend{
 			Label: sp.label, Unit: sp.unit, Values: vals,
-			Color: sp.color, Threshold: sp.thr, Bars: sp.bars,
+			Color: sp.color, Threshold: sp.thr, Bars: sp.bars, Stat: sp.stat,
 		})
 	}
 	return out
