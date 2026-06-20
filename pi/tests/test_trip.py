@@ -283,14 +283,48 @@ class TestTripEnd:
         assert mock_end.call_args[0][1] == trip_id
 
     def test_trip_not_ended_before_30s_threshold(self, tm):
+        # Standard path: voltage rests ABOVE 12.5 (so the fast sub-12.5V path does
+        # not apply) and the PID is still fresh — must wait the full 30s.
         self._start_trip(tm)
 
         with patch("trip.time.monotonic") as mock_mono:
             mock_mono.return_value = 100.0
-            tm.on_voltage(_voltage_response(12.0))
+            tm.on_voltage(_voltage_response(12.7))
             tm.on_rpm(_rpm_response(0))
 
             mock_mono.return_value = 115.0  # only 15s
+            tm.on_voltage(_voltage_response(12.7))  # fresh — PID not silent
+            tm.on_rpm(_rpm_response(0))
+
+        assert tm.current_trip_id is not None
+
+    def test_fast_end_on_voltage_drop_after_5s(self, tm):
+        # B: a fresh sub-12.5V reading ends the trip after just 5s, not 30s.
+        trip_id = self._start_trip(tm)
+
+        with patch("trip.time.monotonic") as mock_mono, \
+             patch("trip.update_trip_end") as mock_end, \
+             patch.object(tm, "_dispatch_dtc_scan"):
+            mock_mono.return_value = 100.0
+            tm.on_voltage(_voltage_response(12.1))  # alternator stopped
+            tm.on_rpm(_rpm_response(0))
+
+            mock_mono.return_value = 106.0  # 6s later (>5s, <30s)
+            tm.on_rpm(_rpm_response(0))
+
+        assert tm.current_trip_id is None
+        mock_end.assert_called_once()
+        assert mock_end.call_args[0][1] == trip_id
+
+    def test_fast_end_not_before_5s(self, tm):
+        self._start_trip(tm)
+
+        with patch("trip.time.monotonic") as mock_mono:
+            mock_mono.return_value = 100.0
+            tm.on_voltage(_voltage_response(12.1))
+            tm.on_rpm(_rpm_response(0))
+
+            mock_mono.return_value = 103.0  # only 3s
             tm.on_rpm(_rpm_response(0))
 
         assert tm.current_trip_id is not None
@@ -312,6 +346,60 @@ class TestTripEnd:
         end_call = [c for c in calls if c[0][1] == "trip_end"]
         assert len(end_call) == 1
         assert end_call[0][0][0] == trip_id
+
+
+# ---------------------------------------------------------------------------
+# Watchdog — force-ends a trip whose OBD callback stream froze
+# ---------------------------------------------------------------------------
+
+class TestWatchdog:
+    def _start_trip(self, tm):
+        with patch("trip.get_trip_number", return_value=1):
+            tm.on_voltage(_voltage_response(14.0))
+            tm.on_rpm(_rpm_response(1000))
+        return tm.current_trip_id
+
+    def test_force_ends_stuck_trip_backdated(self, tm):
+        trip_id = self._start_trip(tm)
+        # Simulate a frozen callback stream: last activity long ago.
+        tm._last_activity_mono = 1000.0
+        tm._last_activity_wall = "2026-06-20T10:00:00+00:00"
+
+        with patch("trip.time.monotonic", return_value=1000.0 + 400), \
+             patch("trip.update_trip_end") as mock_end, \
+             patch.object(tm, "_dispatch_dtc_scan") as mock_scan:
+            tm._watchdog_check()
+
+        assert tm.current_trip_id is None
+        mock_end.assert_called_once()
+        # Back-dated to last activity, not "now".
+        assert mock_end.call_args[0][1] == trip_id
+        assert mock_end.call_args[0][2] == "2026-06-20T10:00:00+00:00"
+        # No DTC scan on a watchdog end (link is dead).
+        mock_scan.assert_not_called()
+
+    def test_noop_when_no_trip_open(self, tm):
+        tm._last_activity_mono = 1000.0
+        with patch("trip.time.monotonic", return_value=1000.0 + 400), \
+             patch("trip.update_trip_end") as mock_end:
+            tm._watchdog_check()
+        mock_end.assert_not_called()
+
+    def test_noop_when_activity_recent(self, tm):
+        self._start_trip(tm)
+        tm._last_activity_mono = 1000.0
+        with patch("trip.time.monotonic", return_value=1000.0 + 60), \
+             patch("trip.update_trip_end") as mock_end:
+            tm._watchdog_check()  # only 60s idle, under the 5-min timeout
+        assert tm.current_trip_id is not None
+        mock_end.assert_not_called()
+
+    def test_start_then_stop_cleans_up_thread(self, tm):
+        tm.start()
+        assert tm._watchdog_thread is not None
+        assert tm._watchdog_thread.is_alive()
+        tm.stop()
+        assert tm._watchdog_thread is None
 
 
 # ---------------------------------------------------------------------------

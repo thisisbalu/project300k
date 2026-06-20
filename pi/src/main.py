@@ -216,6 +216,9 @@ def main() -> None:
     # for DTC scans at trip boundaries, which stops the async loop to avoid
     # byte-race contention on /dev/rfcomm0 with the polling thread.
     trip_manager.set_dtc_query(collector.query_sync)
+    # Start the trip-end watchdog thread (force-ends a trip whose OBD callbacks
+    # froze at key-off, so the next drive does not merge into it).
+    trip_manager.start()
     # collector.start() opens the async connection and starts the monitor thread.
     # It does NOT block waiting for the dongle: if the link is down (engine off →
     # no /dev/rfcomm0) the monitor reconnects in the background every 10s until

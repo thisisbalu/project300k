@@ -62,8 +62,11 @@ time-filter (`time.monotonic()`) to skip enqueue until `interval_s` has elapsed.
 
 ## Trip Detection
 - Trip start: battery_v > 13.0V AND rpm > 0 (both required)
-- Trip end: rpm = 0 for >30s AND battery_v < 12.5V (both required)
-- `_last_voltage`/`_last_voltage_mono` are reset to None in `_end_trip()` — TripManager outlives key-off, so a stale in-drive voltage left behind could start the next trip early (on_rpm fires before on_voltage within a poll)
+- Trip end — any of three (`VOLTAGE_DROP_DURATION_S`/`RPM_ZERO_DURATION_S`/`TRIP_WATCHDOG_TIMEOUT_S`):
+  1. **Fast key-off**: rpm = 0 for >5s AND a fresh battery_v < 12.5V (alternator definitively stopped — a long red light holds ~13.8V, so a real drop is unambiguous)
+  2. **Standard**: rpm = 0 for >30s AND engine-off otherwise confirmed (covers the silent-voltage-PID case: no fresh reading for >30s)
+  3. **Watchdog** (independent thread, `start()`/`stop()`): force-ends a trip after >5min with no rpm>0, **back-dated to last activity** and skipping the trip-end DTC scan. This is the only path that can fire when the OBD/Bluetooth link drops at key-off and freezes the callback stream (rpm reads *nothing*, not 0, so paths 1–2 never run). Without it the next drive merges into the still-open trip (observed: 2/60 trips at 30–45h). `_last_activity_mono`/`_last_activity_wall` track the last rpm>0.
+- `_last_voltage`/`_last_voltage_mono` (and `_last_activity_*`) are reset to None in `_end_trip()` — TripManager outlives key-off, so a stale in-drive voltage left behind could start the next trip early (on_rpm fires before on_voltage within a poll)
 - No polling pause — every tier records continuously while a trip is active. Idle and ESS auto-stop samples (rpm=0 with the bus alive) are kept on purpose; they're honest data and storage is effectively free. The only guard in `_handle_response` is the active-trip check (`current_trip_id is None` → skip).
 
 ## Threading Model
@@ -79,6 +82,10 @@ QueueWriter._drain thread
 DTC scan threads (daemon, one per trip boundary)
     └── obd_connection.connection.query(GET_DTC)
     └── joined by TripManager.stop() before disconnect
+
+trip-watchdog thread (daemon, TripManager.start())
+    └── every 30s: force-ends an open trip idle >5min (callback-independent)
+    └── signalled + joined by TripManager.stop()
 
 obd-monitor thread (Collector)
     └── checks is_connected() every 10s
@@ -223,7 +230,7 @@ are under `/dev`, which `ProtectSystem` does not cover, so they keep working.
 ## Shutdown Sequence (main.py finally block)
 ```
 collector.stop()      → stops obd.Async loop + monitor thread
-trip_manager.stop()   → joins in-flight DTC scan threads (5s timeout)
+trip_manager.stop()   → stops the watchdog thread, then joins in-flight DTC scan threads (5s timeout)
 queue_writer.stop()   → drains queue + commits remaining rows (15s timeout)
 obd_connection.disconnect()
 conn.close()

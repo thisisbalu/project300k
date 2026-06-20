@@ -53,9 +53,20 @@ from logger import logger
 from storage import get_trip_number, update_trip_end
 
 # Trip boundary thresholds
-VOLTAGE_ENGINE_RUNNING = 13.0  # V — alternator running above this
-VOLTAGE_ENGINE_OFF     = 12.5  # V — alternator stopped below this
-RPM_ZERO_DURATION_S    = 30    # seconds RPM must be 0 before trip ends
+VOLTAGE_ENGINE_RUNNING  = 13.0  # V — alternator running above this
+VOLTAGE_ENGINE_OFF      = 12.5  # V — alternator stopped below this
+RPM_ZERO_DURATION_S     = 30    # seconds RPM must be 0 before trip ends (standard)
+VOLTAGE_DROP_DURATION_S = 5     # faster end: rpm=0 AND a fresh sub-12.5V reading
+                                # confirms the alternator stopped — no need to wait
+                                # the full 30s (a long red light keeps voltage ~13.8V,
+                                # so a real <12.5V drop is unambiguous engine-off).
+# Independent watchdog: a trip that stays open with no engine activity for this
+# long is force-ended, back-dated to its last activity. Catches the case the
+# callback-driven logic above CANNOT — a Bluetooth/OBD link that drops at key-off
+# stops the callbacks entirely (RPM reads nothing, not 0), freezing the 30s timer,
+# so the trip never ends and the next drive's data merges into it.
+TRIP_WATCHDOG_TIMEOUT_S = 300   # 5 min of no rpm>0 → the drive is over
+TRIP_WATCHDOG_POLL_S    = 30    # how often the watchdog thread checks
 
 
 class TripManager:
@@ -70,7 +81,11 @@ class TripManager:
 
     Transitions:
         No trip  → Active:  voltage > 13.0V AND rpm > 0
-        Active   → No trip: rpm = 0 for > 30s AND voltage < 12.5V
+        Active   → No trip, by any of:
+            - rpm = 0 for > 5s  AND a fresh voltage reading < 12.5V (fast key-off)
+            - rpm = 0 for > 30s AND voltage confirms engine-off (silent/low PID)
+            - no rpm > 0 for > 5 min (watchdog — catches a frozen callback stream
+              when the OBD/Bluetooth link drops; back-dated to last activity)
 
     Attributes:
         current_trip_id: UUID string of the active trip, or None between trips.
@@ -114,6 +129,18 @@ class TripManager:
         # ever observed below VOLTAGE_ENGINE_OFF.
         self._last_voltage_mono: float | None = None
 
+        # Last time rpm>0 was seen (engine confirmed running), tracked both as a
+        # monotonic clock (for the watchdog's idle check) and an ISO wall-clock
+        # timestamp (so a watchdog-forced end is back-dated to when driving
+        # actually stopped, not when the watchdog noticed — otherwise a frozen
+        # trip's duration would be inflated by the freeze).
+        self._last_activity_mono: float | None = None
+        self._last_activity_wall: str | None = None
+
+        # Independent watchdog thread (started by start(), stopped by stop()).
+        self._watchdog_thread: threading.Thread | None = None
+        self._watchdog_stop = threading.Event()
+
         # Track active DTC scan threads so stop() can join them before
         # obd_connection.disconnect() closes the connection they are using.
         self._dtc_threads: list[threading.Thread] = []
@@ -139,6 +166,10 @@ class TripManager:
         with self._lock:
             if rpm_present and rpm > 0:
                 self._rpm_zero_since = None
+                # Record engine activity for the watchdog's idle check and for
+                # back-dating a watchdog-forced end.
+                self._last_activity_mono = time.monotonic()
+                self._last_activity_wall = datetime.now(timezone.utc).isoformat()
 
                 # Start trip only if no trip is currently active AND voltage
                 # confirms the alternator is running. Both checks happen inside
@@ -153,10 +184,15 @@ class TripManager:
 
                 elapsed = time.monotonic() - self._rpm_zero_since
 
-                # End the trip once RPM has been 0 for >30s and voltage also
-                # confirms the engine is off.
-                if elapsed >= RPM_ZERO_DURATION_S:
-                    if self.current_trip_id is not None and self._engine_off_confirmed():
+                if self.current_trip_id is not None:
+                    # Fast path: a fresh sub-12.5V reading is unambiguous engine-off
+                    # (a running engine holds ~13.8V even at idle), so end after just
+                    # VOLTAGE_DROP_DURATION_S rather than the full 30s.
+                    if self._voltage_below(VOLTAGE_ENGINE_OFF) and elapsed >= VOLTAGE_DROP_DURATION_S:
+                        self._end_trip()
+                    # Standard path: RPM=0 for 30s and engine-off otherwise confirmed
+                    # (covers the silent-voltage-PID case where no fresh reading comes).
+                    elif elapsed >= RPM_ZERO_DURATION_S and self._engine_off_confirmed():
                         self._end_trip()
 
     def on_voltage(self, response: obd.OBDResponse) -> None:
@@ -189,18 +225,64 @@ class TripManager:
         """
         self._dtc_query_fn = fn
 
+    def start(self) -> None:
+        """Start the trip-end watchdog thread.
+
+        Called from main.py after construction. The watchdog runs independently of
+        the OBD callback stream so it can end a trip even when that stream has
+        frozen (the failure the callback-driven logic cannot detect).
+        """
+        if self._watchdog_thread is not None:
+            return
+        self._watchdog_stop.clear()
+        self._watchdog_thread = threading.Thread(
+            target=self._watchdog_loop, name="trip-watchdog", daemon=True
+        )
+        self._watchdog_thread.start()
+        logger.info("Trip watchdog started")
+
     def stop(self) -> None:
-        """Wait for any in-flight DTC scan threads to complete.
+        """Stop the watchdog and wait for in-flight DTC scan threads to complete.
 
         Called from main.py's finally block after collector.stop() and before
         obd_connection.disconnect(), so the scan threads finish their query()
         calls before the underlying serial connection is closed.
         """
+        self._watchdog_stop.set()
+        if self._watchdog_thread is not None:
+            self._watchdog_thread.join(timeout=5)
+            self._watchdog_thread = None
         with self._dtc_threads_lock:
             threads = list(self._dtc_threads)
         for t in threads:
             t.join(timeout=5)
         logger.info("TripManager stopped")
+
+    def _watchdog_loop(self) -> None:
+        """Poll the idle check until stop() is signalled. Runs on its own thread."""
+        while not self._watchdog_stop.wait(TRIP_WATCHDOG_POLL_S):
+            try:
+                self._watchdog_check()
+            except Exception:  # never let the watchdog thread die
+                logger.exception("Trip watchdog check failed")
+
+    def _watchdog_check(self) -> None:
+        """Force-end a trip with no engine activity for TRIP_WATCHDOG_TIMEOUT_S.
+
+        Back-dates the end to the last activity timestamp and skips the DTC scan
+        (the link is dead in this case). A no-op when no trip is open or activity
+        is recent.
+        """
+        with self._lock:
+            if self.current_trip_id is None or self._last_activity_mono is None:
+                return
+            idle = time.monotonic() - self._last_activity_mono
+            if idle >= TRIP_WATCHDOG_TIMEOUT_S:
+                logger.warning(
+                    f"Trip watchdog: no engine activity for {idle:.0f}s — force-ending "
+                    f"stuck trip {self.current_trip_id} (OBD link likely dropped at key-off)"
+                )
+                self._end_trip(end_time=self._last_activity_wall, scan=False)
 
     def _start_trip(self) -> None:
         """Begin a new trip — generate UUID, persist trips row, scan DTCs.
@@ -234,14 +316,23 @@ class TripManager:
         trip_id = self.current_trip_id
         self._dispatch_dtc_scan(trip_id, "trip_start")
 
-    def _end_trip(self) -> None:
+    def _end_trip(self, end_time: str | None = None, scan: bool = True) -> None:
         """Close the current trip — write end_time, calculate duration, scan DTCs.
 
         Must be called with _lock held. Uses update_trip_end() which routes
         through QueueWriter.direct_execute() so the UPDATE is serialised
         against the writer thread's INSERT batches via _db_lock.
+
+        Args:
+            end_time: ISO8601 end timestamp. Defaults to now() for a live key-off
+                      end. The watchdog passes the last-activity timestamp instead,
+                      so a trip that froze is not credited with the idle time.
+            scan:     Whether to dispatch a trip-end DTC scan. The watchdog passes
+                      False — it only fires when the OBD link is dead, so a scan
+                      would no-op anyway and could contend with the reconnect.
         """
-        end_time = datetime.now(timezone.utc).isoformat()
+        if end_time is None:
+            end_time = datetime.now(timezone.utc).isoformat()
         trip_id = self.current_trip_id
 
         # update_trip_end() calls queue_writer.direct_execute() which acquires
@@ -251,6 +342,7 @@ class TripManager:
 
         logger.info(f"Trip ended: {trip_id}")
         self.current_trip_id = None
+        self._rpm_zero_since = None
 
         # Drop the last voltage reading from this trip. TripManager is long-lived
         # across key-off, so a stale in-drive value (~13.8V) left here would let
@@ -260,8 +352,13 @@ class TripManager:
         self._last_voltage = None
         self._last_voltage_mono = None
 
+        # Clear activity so the watchdog does not re-fire on the just-closed trip.
+        self._last_activity_mono = None
+        self._last_activity_wall = None
+
         # DTC scan dispatched to a background thread — see _scan_dtc() note.
-        self._dispatch_dtc_scan(trip_id, "trip_end")
+        if scan:
+            self._dispatch_dtc_scan(trip_id, "trip_end")
 
     def _dispatch_dtc_scan(self, trip_id: str, scan_trigger: str) -> None:
         """Dispatch a DTC scan to a background thread.

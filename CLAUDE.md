@@ -91,7 +91,7 @@ jarvis datasette start # start Datasette browser at :8001 (on-demand only)
 ## Key Decisions
 - Polling tiers: 1s / 5s / 30s (standard OBD) + ford_obd_5s / 10s / 20s (Mode 22)
 - Single `obd.Async` connection with time-filter callbacks enforcing `interval_s` per PID — python-obd 0.7.3 fires all watchers at ~1Hz regardless of registration interval
-- Trip start: voltage >13V AND RPM>0 — Trip end: RPM=0 for >30s AND voltage <12.5V
+- Trip start: voltage >13V AND RPM>0 — Trip end (any of): RPM=0 for >5s AND a fresh <12.5V reading (fast key-off); RPM=0 for >30s AND engine-off otherwise confirmed (silent voltage PID); or an independent watchdog force-ends a trip after >5min with no RPM>0 (back-dated to last activity) — this catches a frozen OBD callback stream when Bluetooth drops at key-off, which would otherwise merge the next drive into the open trip
 - No polling pause — all tiers record continuously during an active trip (idle/ESS-stop data is kept; filter on `rpm > 0` in Grafana when an average should exclude idle)
 - NULL stored for bad PID responses — never carry forward last known value
 - SQLite mirrors PostgreSQL structure exactly — same tables, same columns, same units
