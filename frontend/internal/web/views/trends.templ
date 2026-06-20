@@ -15,6 +15,12 @@ templ trendsGrid(trends []Trend) {
 						</span>
 					</div>
 					@templ.Raw(t.SVG())
+					if t.Has2() {
+						<div class="spark-legend">
+							<span><i style={ "background:" + t.Color }></i>{ t.LegendA }</span>
+							<span><i style={ "background:" + t.Color2 }></i>{ t.LegendB }</span>
+						</div>
+					}
 				</div>
 			}
 		}

@@ -24,9 +24,17 @@ type Trend struct {
 	Threshold float64 // >0 draws a dashed red-flag reference line
 	Bars      bool    // render as mini bars instead of a line
 	Stat      string  // badge value: "" / "last" (default), "max", "min"
+
+	// Optional second overlaid series (e.g. boost desired vs actual). When set,
+	// both lines share one scale and a small legend names them.
+	Values2 []float64
+	Color2  string
+	LegendA string // name for the primary series (Values)
+	LegendB string // name for the secondary series (Values2)
 }
 
-func (t Trend) Has() bool { return len(t.Values) > 0 }
+func (t Trend) Has() bool  { return len(t.Values) > 0 }
+func (t Trend) Has2() bool { return len(t.Values2) > 0 }
 
 // LastLabel renders the badge value. Default is the last point (overview: the most
 // recent drive). Per-trip curves use "max" because the last sample is end-of-drive
@@ -53,6 +61,12 @@ func (t Trend) LastLabel() string {
 		return km1(v)
 	case "rpm":
 		return fmt.Sprintf("%.0f rpm", v)
+	case "kPa":
+		return fmt.Sprintf("%.0f kPa", v)
+	case "psi":
+		return fmt.Sprintf("%.1f psi", v)
+	case "°":
+		return fmt.Sprintf("%.1f°", v)
 	default:
 		return fmt.Sprintf("%.0f %s", v, t.Unit)
 	}
@@ -75,6 +89,9 @@ func (t Trend) StatLabel() string {
 func (t Trend) SVG() string {
 	if t.Bars {
 		return sparkBars(t.Values, t.Color)
+	}
+	if len(t.Values2) > 0 {
+		return spark2(t.Values, t.Color, t.Values2, t.Color2)
 	}
 	return spark(t.Values, t.Color, t.Threshold)
 }
@@ -147,6 +164,45 @@ func spark(vals []float64, color string, threshold float64) string {
 	fmt.Fprintf(&b, `<circle cx="%.1f" cy="%.1f" r="2" style="fill:%s"/>`, xat(n-1), yat(vals[n-1]), color)
 	b.WriteString(`</svg>`)
 	return b.String()
+}
+
+// spark2 overlays two series on one shared scale (e.g. boost desired vs actual).
+func spark2(a []float64, colorA string, b []float64, colorB string) string {
+	if len(a) == 0 && len(b) == 0 {
+		return emptySpark()
+	}
+	a = downsample(a, 80)
+	b = downsample(b, 80)
+	mn, mx := minMax(append(append([]float64{}, a...), b...))
+	rng := mx - mn
+	if rng == 0 {
+		rng = 1
+	}
+	line := func(vals []float64, color string) string {
+		n := len(vals)
+		if n == 0 {
+			return ""
+		}
+		xat := func(i int) float64 {
+			if n == 1 {
+				return sparkW / 2
+			}
+			return sparkP + float64(i)/float64(n-1)*(sparkW-2*sparkP)
+		}
+		yat := func(v float64) float64 { return sparkH - sparkP - (v-mn)/rng*(sparkH-2*sparkP) }
+		pts := make([]string, n)
+		for i, v := range vals {
+			pts[i] = fmt.Sprintf("%.1f,%.1f", xat(i), yat(v))
+		}
+		return fmt.Sprintf(`<polyline class="spark-line" style="stroke:%s" points="%s"/><circle cx="%.1f" cy="%.1f" r="2" style="fill:%s"/>`,
+			color, strings.Join(pts, " "), xat(n-1), yat(vals[n-1]), color)
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, `<svg class="spark" viewBox="0 0 %g %g" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">`, sparkW, sparkH)
+	sb.WriteString(line(b, colorB)) // draw the reference (desired) first, under
+	sb.WriteString(line(a, colorA))
+	sb.WriteString(`</svg>`)
+	return sb.String()
 }
 
 func sparkBars(vals []float64, color string) string {

@@ -447,6 +447,35 @@ func (s *Store) TripCurveRPM(ctx context.Context, id string) ([]float64, error) 
 func (s *Store) TripCurveBattery(ctx context.Context, id string) ([]float64, error) {
 	return s.floatSeries(ctx, `SELECT battery_v FROM obd_30s WHERE trip_id=$1 AND battery_v IS NOT NULL ORDER BY timestamp`, id)
 }
+func (s *Store) TripCurveOilPressure(ctx context.Context, id string) ([]float64, error) {
+	return s.floatSeries(ctx, `SELECT oil_pressure_kpa FROM ford_obd_10s WHERE trip_id=$1 AND oil_pressure_kpa IS NOT NULL ORDER BY timestamp`, id)
+}
+func (s *Store) TripCurveKnockRetard(ctx context.Context, id string) ([]float64, error) {
+	return s.floatSeries(ctx, `SELECT knock_retard_deg FROM ford_obd_10s WHERE trip_id=$1 AND knock_retard_deg IS NOT NULL ORDER BY timestamp`, id)
+}
+
+// TripCurveBoost returns the desired and actual boost curves as two aligned,
+// time-ordered series (the gap between them is the turbo/wastegate health signal).
+func (s *Store) TripCurveBoost(ctx context.Context, id string) (desired, actual []float64, err error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT COALESCE(boost_desired_psi, 0), COALESCE(boost_actual_psi, 0)
+		FROM ford_obd_10s
+		WHERE trip_id=$1 AND (boost_desired_psi IS NOT NULL OR boost_actual_psi IS NOT NULL)
+		ORDER BY timestamp`, id)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var d, a float64
+		if err := rows.Scan(&d, &a); err != nil {
+			return nil, nil, err
+		}
+		desired = append(desired, d)
+		actual = append(actual, a)
+	}
+	return desired, actual, rows.Err()
+}
 
 func isNoRows(err error) bool {
 	return err != nil && err.Error() == "no rows in result set"
