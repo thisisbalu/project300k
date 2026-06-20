@@ -254,6 +254,104 @@ func (s *Store) LastSync(ctx context.Context) (time.Time, bool, error) {
 	return *ts, true, nil
 }
 
+// ---- Sparkline series -----------------------------------------------------
+
+func (s *Store) floatSeries(ctx context.Context, sql string, args ...any) ([]float64, error) {
+	rows, err := s.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []float64
+	for rows.Next() {
+		var v float64
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
+// Overview "last N days" trends — one point per drive, oldest → newest.
+
+func (s *Store) TrendCoolantPeak(ctx context.Context, days int) ([]float64, error) {
+	return s.floatSeries(ctx, `SELECT max(o.coolant_temp_c) FROM trips t JOIN obd_5s o ON o.trip_id=t.id
+		WHERE t.start_time > now() - make_interval(days => $1)
+		GROUP BY t.id, t.start_time HAVING max(o.coolant_temp_c) IS NOT NULL ORDER BY t.start_time`, days)
+}
+
+func (s *Store) TrendTransPeak(ctx context.Context, days int) ([]float64, error) {
+	return s.floatSeries(ctx, `SELECT max(o.trans_temp_c) FROM trips t JOIN ford_obd_5s o ON o.trip_id=t.id
+		WHERE t.start_time > now() - make_interval(days => $1)
+		GROUP BY t.id, t.start_time HAVING max(o.trans_temp_c) IS NOT NULL ORDER BY t.start_time`, days)
+}
+
+func (s *Store) TrendBatteryMin(ctx context.Context, days int) ([]float64, error) {
+	return s.floatSeries(ctx, `SELECT min(o.battery_v) FROM trips t JOIN obd_30s o ON o.trip_id=t.id
+		WHERE t.start_time > now() - make_interval(days => $1)
+		GROUP BY t.id, t.start_time HAVING min(o.battery_v) IS NOT NULL ORDER BY t.start_time`, days)
+}
+
+func (s *Store) TrendBatteryMax(ctx context.Context, days int) ([]float64, error) {
+	return s.floatSeries(ctx, `SELECT max(o.battery_v) FROM trips t JOIN obd_30s o ON o.trip_id=t.id
+		WHERE t.start_time > now() - make_interval(days => $1)
+		GROUP BY t.id, t.start_time HAVING max(o.battery_v) IS NOT NULL ORDER BY t.start_time`, days)
+}
+
+func (s *Store) TrendMaxSpeed(ctx context.Context, days int) ([]float64, error) {
+	return s.floatSeries(ctx, `SELECT max(o.speed_kmh)::float8 FROM trips t JOIN obd_1s o ON o.trip_id=t.id
+		WHERE t.start_time > now() - make_interval(days => $1)
+		GROUP BY t.id, t.start_time HAVING max(o.speed_kmh) IS NOT NULL ORDER BY t.start_time`, days)
+}
+
+func (s *Store) TrendRpmPeak(ctx context.Context, days int) ([]float64, error) {
+	return s.floatSeries(ctx, `SELECT max(o.rpm)::float8 FROM trips t JOIN obd_1s o ON o.trip_id=t.id
+		WHERE t.start_time > now() - make_interval(days => $1)
+		GROUP BY t.id, t.start_time HAVING max(o.rpm) IS NOT NULL ORDER BY t.start_time`, days)
+}
+
+func (s *Store) TrendIntakePeak(ctx context.Context, days int) ([]float64, error) {
+	return s.floatSeries(ctx, `SELECT max(o.intake_air_temp_c) FROM trips t JOIN obd_5s o ON o.trip_id=t.id
+		WHERE t.start_time > now() - make_interval(days => $1)
+		GROUP BY t.id, t.start_time HAVING max(o.intake_air_temp_c) IS NOT NULL ORDER BY t.start_time`, days)
+}
+
+func (s *Store) TrendAmbientAvg(ctx context.Context, days int) ([]float64, error) {
+	return s.floatSeries(ctx, `SELECT avg(o.ambient_air_temp_c) FROM trips t JOIN obd_30s o ON o.trip_id=t.id
+		WHERE t.start_time > now() - make_interval(days => $1)
+		GROUP BY t.id, t.start_time HAVING avg(o.ambient_air_temp_c) IS NOT NULL ORDER BY t.start_time`, days)
+}
+
+func (s *Store) TrendAvgMovingSpeed(ctx context.Context, days int) ([]float64, error) {
+	return s.floatSeries(ctx, `SELECT avg_moving_speed_kmh FROM trip_summary
+		WHERE start_time > now() - make_interval(days => $1) AND avg_moving_speed_kmh IS NOT NULL
+		ORDER BY start_time`, days)
+}
+
+func (s *Store) TrendDistance(ctx context.Context, days int) ([]float64, error) {
+	return s.floatSeries(ctx, `SELECT distance_km FROM trip_summary
+		WHERE start_time > now() - make_interval(days => $1) ORDER BY start_time`, days)
+}
+
+// Per-trip curves for the trip-detail page (time-ordered samples within one trip).
+
+func (s *Store) TripCurveCoolant(ctx context.Context, id string) ([]float64, error) {
+	return s.floatSeries(ctx, `SELECT coolant_temp_c FROM obd_5s WHERE trip_id=$1 AND coolant_temp_c IS NOT NULL ORDER BY timestamp`, id)
+}
+func (s *Store) TripCurveTrans(ctx context.Context, id string) ([]float64, error) {
+	return s.floatSeries(ctx, `SELECT trans_temp_c FROM ford_obd_5s WHERE trip_id=$1 AND trans_temp_c IS NOT NULL ORDER BY timestamp`, id)
+}
+func (s *Store) TripCurveSpeed(ctx context.Context, id string) ([]float64, error) {
+	return s.floatSeries(ctx, `SELECT speed_kmh::float8 FROM obd_1s WHERE trip_id=$1 AND speed_kmh IS NOT NULL ORDER BY timestamp`, id)
+}
+func (s *Store) TripCurveRPM(ctx context.Context, id string) ([]float64, error) {
+	return s.floatSeries(ctx, `SELECT rpm::float8 FROM obd_1s WHERE trip_id=$1 AND rpm IS NOT NULL ORDER BY timestamp`, id)
+}
+func (s *Store) TripCurveBattery(ctx context.Context, id string) ([]float64, error) {
+	return s.floatSeries(ctx, `SELECT battery_v FROM obd_30s WHERE trip_id=$1 AND battery_v IS NOT NULL ORDER BY timestamp`, id)
+}
+
 func isNoRows(err error) bool {
 	return err != nil && err.Error() == "no rows in result set"
 }

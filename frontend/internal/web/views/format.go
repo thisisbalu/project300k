@@ -19,6 +19,7 @@ type PageData struct {
 	LastSync   time.Time
 	HasSync    bool
 	Demo       bool
+	Trends     []Trend
 }
 
 // OdometerKm is the true odometer estimate: dash baseline + logged distance.

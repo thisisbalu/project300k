@@ -37,8 +37,8 @@ script goTrip(id string) {
 	window.location = "/trips/" + id;
 }
 
-// TripDetail shows one trip's stats and per-trip peaks + any fault codes.
-templ TripDetail(t queries.Trip, p queries.TripPeaks, dtcs []queries.DTC, demo bool) {
+// TripDetail shows one trip's stats, per-trip curves, peaks, and any fault codes.
+templ TripDetail(t queries.Trip, p queries.TripPeaks, dtcs []queries.DTC, curves []Trend, demo bool) {
 	@Layout("Trip", "trips", demo) {
 		<a class="back" href="/trips">← All trips</a>
 		<h1>
@@ -49,6 +49,12 @@ templ TripDetail(t queries.Trip, p queries.TripPeaks, dtcs []queries.DTC, demo b
 			}
 		</h1>
 		<p class="subtle">{ tsd(t.StartTime) }</p>
+		if len(curves) > 0 {
+			<section class="trends-section">
+				<h2>This trip <span class="per-drive">over the drive</span></h2>
+				@trendsGrid(curves)
+			</section>
+		}
 		<div class="grid">
 			<section class="card">
 				<h2>Summary</h2>

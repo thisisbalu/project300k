@@ -37,6 +37,12 @@ templ Overview(d PageData) {
 				<p class="hint">Tip: set <code>ODOMETER_BASELINE_KM</code> to your dash reading on day one for a true odometer.</p>
 			}
 		</section>
+		if len(d.Trends) > 0 {
+			<section class="trends-section">
+				<h2>Trends · last 30 days <span class="per-drive">one point per drive</span></h2>
+				@trendsGrid(d.Trends)
+			</section>
+		}
 		<div class="grid">
 			<section class="card">
 				<h2>Last trip</h2>

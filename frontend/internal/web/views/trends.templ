@@ -1,0 +1,19 @@
+package views
+
+// trendsGrid renders a responsive grid of sparkline cards. Series with no data
+// are skipped so the grid only shows what the car actually reports.
+templ trendsGrid(trends []Trend) {
+	<div class="trends">
+		for _, t := range trends {
+			if t.Has() {
+				<div class="trend">
+					<div class="trend-top">
+						<span class="trend-label">{ t.Label }</span>
+						<span class="trend-last">{ t.LastLabel() }</span>
+					</div>
+					@templ.Raw(t.SVG())
+				</div>
+			}
+		}
+	</div>
+}

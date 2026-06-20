@@ -2,6 +2,7 @@
 package web
 
 import (
+	"context"
 	"embed"
 	"log/slog"
 	"net/http"
@@ -64,7 +65,45 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "last sync", err)
 		return
 	}
+	d.Trends = s.overviewTrends(ctx)
 	s.render(w, r, views.Overview(d))
+}
+
+// overviewTrends builds the 30-day, one-point-per-drive sparklines. A failing
+// series is logged and simply omitted — never fatal to the page.
+func (s *Server) overviewTrends(ctx context.Context) []views.Trend {
+	const days = 30
+	type spec struct {
+		label, unit, color string
+		thr                float64
+		bars               bool
+		fn                 func(context.Context, int) ([]float64, error)
+	}
+	specs := []spec{
+		{"Coolant peak / drive", "°C", "#d22f2f", 110, false, s.q.TrendCoolantPeak},
+		{"Transmission peak / drive", "°C", "#c77700", 120, false, s.q.TrendTransPeak},
+		{"Battery low / drive", "V", "#2563eb", 0, false, s.q.TrendBatteryMin},
+		{"Battery high / drive", "V", "#0d9488", 0, false, s.q.TrendBatteryMax},
+		{"Max speed / drive", "km/h", "#1ca54c", 0, false, s.q.TrendMaxSpeed},
+		{"Avg moving speed / drive", "km/h", "#1ca54c", 0, false, s.q.TrendAvgMovingSpeed},
+		{"Engine RPM peak / drive", "rpm", "#e0529c", 0, false, s.q.TrendRpmPeak},
+		{"Intake air peak / drive", "°C", "#7a5af5", 0, false, s.q.TrendIntakePeak},
+		{"Ambient temp / drive", "°C", "#0d9488", 0, false, s.q.TrendAmbientAvg},
+		{"Distance / drive", "km", "#2563eb", 0, true, s.q.TrendDistance},
+	}
+	var out []views.Trend
+	for _, sp := range specs {
+		vals, err := sp.fn(ctx, days)
+		if err != nil {
+			s.log.Warn("trend query failed", "label", sp.label, "err", err)
+			continue
+		}
+		out = append(out, views.Trend{
+			Label: sp.label, Unit: sp.unit, Values: vals,
+			Color: sp.color, Threshold: sp.thr, Bars: sp.bars,
+		})
+	}
+	return out
 }
 
 func (s *Server) handleTrips(w http.ResponseWriter, r *http.Request) {
@@ -98,7 +137,34 @@ func (s *Server) handleTripDetail(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "trip dtcs", err)
 		return
 	}
-	s.render(w, r, views.TripDetail(trip, peaks, dtcs, s.cfg.DemoMode))
+	s.render(w, r, views.TripDetail(trip, peaks, dtcs, s.tripCurves(ctx, id), s.cfg.DemoMode))
+}
+
+// tripCurves builds the per-trip sparklines (over the drive). A failing series
+// is logged and omitted.
+func (s *Server) tripCurves(ctx context.Context, id string) []views.Trend {
+	type spec struct {
+		label, unit, color string
+		thr                float64
+		fn                 func(context.Context, string) ([]float64, error)
+	}
+	specs := []spec{
+		{"Coolant", "°C", "#d22f2f", 110, s.q.TripCurveCoolant},
+		{"Transmission", "°C", "#c77700", 120, s.q.TripCurveTrans},
+		{"Speed", "km/h", "#1ca54c", 0, s.q.TripCurveSpeed},
+		{"Engine RPM", "rpm", "#e0529c", 0, s.q.TripCurveRPM},
+		{"Battery", "V", "#2563eb", 0, s.q.TripCurveBattery},
+	}
+	var out []views.Trend
+	for _, sp := range specs {
+		vals, err := sp.fn(ctx, id)
+		if err != nil {
+			s.log.Warn("trip curve failed", "label", sp.label, "err", err)
+			continue
+		}
+		out = append(out, views.Trend{Label: sp.label, Unit: sp.unit, Values: vals, Color: sp.color, Threshold: sp.thr})
+	}
+	return out
 }
 
 func (s *Server) handleDTC(w http.ResponseWriter, r *http.Request) {
