@@ -178,6 +178,9 @@ the server's DB starts empty. **Carry the data over** by copying the newest dump
 `BACKUP_DIR` to the server and `pg_restore`-ing it into the fresh `project300k` (see
 **Backups**). On the server, switch `BACKUP_DIR` to a local dir + add an `rclone` push.
 
+See **[MIGRATION.md](MIGRATION.md)** for the full step-by-step runbook (server prep,
+`.env` changes, data restore, repointing the Pi, and backup options).
+
 ## Test
 
 ```bash
