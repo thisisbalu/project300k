@@ -209,8 +209,8 @@ Returns: Red / Yellow / Green flags + plain English diagnosis.
 ```
 project300k/
 ├── pi/          Part 1 — Python OBD collector (Raspberry Pi)
-├── backend/     Part 2 — Golang API + PostgreSQL
-├── frontend/    Part 3 — Web dashboard
+├── backend/     Part 2 — Golang API + PostgreSQL + Grafana
+├── frontend/    Part 3 — Web dashboard (Go + templ + htmx)
 └── README.md
 ```
 
@@ -224,16 +224,20 @@ project300k/
    - Sync runs **once per drive** (boot-triggered): proactive hotspot connect →
      drain backlog over Tailscale → 5-min grace → disconnect
 
-2. **Part 2 — Home server** 🚧 *foundation built*
+2. **Part 2 — Home server** ✅ *built (running on the temp laptop server)*
    - **Done:** PostgreSQL schema + migrations, Golang `/sync` API (stdlib + pgx),
-     Docker stack (Tailscale sidecar + Postgres + API). Real Pi data is syncing in.
-   - **Pending:** Grafana dashboards, Claude API analysis, ntfy/email alerts,
-     `pg_dump`→rclone backups, `distance_km` computation.
+     Docker stack (Tailscale sidecar + Postgres + API), Grafana dashboards + ntfy
+     alerts (Core 4 + DTC), `distance_km`/300k views, daily `pg_dump` backups → iCloud.
+   - **Pending:** Claude API analysis, `rclone` backup push (on the real server).
    - **Note:** running on a **laptop as a temporary server** (~2 months) until the
      mini-PC is bought; the Pi reaches it over the private tailnet only.
 
-3. **Part 3 — Web dashboard** *(deferred)*
-   - Trip history, health trends, DTC log, Claude analysis UI
+3. **Part 3 — Web dashboard** 🚧 *Phase A built*
+   - **Done (Phase A):** server-rendered Go + templ + htmx app (`web` container on the
+     tailnet, `:8090`) — overview (300k progress, health verdict, last trip), trip
+     history, trip detail, DTC log. Mobile-first PWA.
+   - **Pending:** Phase B service records (photo → Claude vision extraction → logbook),
+     Phase C AI analysis.
 
 ---
 

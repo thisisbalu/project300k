@@ -24,14 +24,18 @@ see `backend/README.md`. The Pi reaches it over the private tailnet only.
 ## Repo Layout
 ```
 pi/          Part 1 — Python OBD collector (Raspberry Pi 3B) ← COMPLETE, live in car
-backend/     Part 2 — Golang API + PostgreSQL + Grafana      ← FOUNDATION BUILT
-frontend/    Part 3 — Web dashboard (deferred)
+backend/     Part 2 — Golang API + PostgreSQL + Grafana      ← BUILT (API, Grafana, backups, alerts)
+frontend/    Part 3 — Web dashboard (Go + templ + htmx)      ← PHASE A BUILT
 ```
 
-Part 2 status: schema + migrations + Go `/sync` API + Docker/Tailscale stack are built and
-running (real Pi data syncing into PostgreSQL). Still pending: Grafana dashboards, Claude API
-analysis, ntfy/email alerts, pg_dump→rclone backups, `distance_km` computation, and provisioning
-the real home server. Parts are built sequentially.
+Part 2 status: `/sync` API + schema/migrations + Docker/Tailscale stack + Grafana dashboards +
+`distance_km`/300k views + daily pg_dump backups (→iCloud) + ntfy alerts (Core 4 + DTC) are built
+and running on the laptop-as-temp-server. Still pending: Claude API analysis, rclone backup push
+(on the real server), and provisioning the real home server.
+
+Part 3 status: Phase A built — server-rendered car-health app (`web` container on the tailnet at
+:8090): overview, trip history, trip detail, DTC log. Pending: Phase B service records (photo →
+Claude vision extraction → logbook) and Phase C AI analysis. Parts are built sequentially.
 
 See `pi/CLAUDE.md` for detailed Pi internals: threading model, OBD connection rules, SQLite thread-safety contract, polling tier PID table, shutdown order, Mode 22 hex addresses, and systemd service specs.
 
