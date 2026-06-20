@@ -17,14 +17,30 @@ as one static binary in a distroless image, in the same Docker stack as everythi
 ## Pages (Phase A)
 | Route | Shows |
 |-------|-------|
-| `/` | Overview — 300k progress, health verdict (🟢/🟡/🔴 from the alert thresholds), odometer, last trip, sync freshness |
+| `/` | Overview — 300k progress + true odometer, health verdict (🟢/🟡/🔴 from the alert thresholds), last trip, sync freshness, **30-day sparkline trends** |
 | `/trips` | Trip history (newest first) |
-| `/trips/{id}` | Trip detail — stats, per-trip peaks (coolant/oil/trans/battery), fault codes |
+| `/trips/{id}` | Trip detail — **per-trip curves** (coolant/trans/speed/RPM/battery), stats, peaks, fault codes |
 | `/dtc` | Full diagnostic-trouble-code log |
 | `/healthz` | liveness (DB ping) |
 
 The health verdict uses the **same thresholds as the Grafana alert rules**, so dashboards,
 alerts, and this page always agree.
+
+### Sparklines (no JavaScript)
+Trends are **server-rendered SVG** generated in Go (`internal/web/views/spark.go`) — no
+chart library, no JS, no build step. The overview shows one point **per drive** over 30
+days (coolant/trans peaks with red-flag threshold lines, battery low/high, max + avg-moving
+speed, RPM peak, intake/ambient temp, distance bars); trip detail shows each metric's curve
+**over the drive** (badge = the drive's peak, since the last sample is end-of-drive ≈ 0).
+Grafana stays the deep-dive tool; this is the glanceable view.
+
+### Theme
+Light theme, mobile-first. Colours are CSS variables at the top of `assets/app.css`.
+
+### Odometer
+This vehicle exposes no odometer PID, so distance is speed-integrated. Set
+`ODOMETER_BASELINE_KM` to the dash reading on day one; the overview shows
+`baseline + logged distance` as the true odometer and drives the 300k progress bar.
 
 ## Layout
 ```

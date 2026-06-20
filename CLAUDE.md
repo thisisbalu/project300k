@@ -11,15 +11,18 @@ Active longevity engineering — catch problems early, drive maintenance decisio
 OBDLink MX+ → Bluetooth → Raspberry Pi 3B (in car)
     └── SQLite (USB flash drive, WAL mode, permanent storage)
         └── Sync via iPhone hotspot (once per drive, boot-triggered, over Tailscale)
-            └── Golang API (home server, Tailscale only)
+            └── Golang /sync API (home server, Tailscale only)
                 └── PostgreSQL
-                    ├── Grafana dashboards + alerts
-                    └── Claude API analysis (on demand + weekly + DTC triggered)
+                    ├── Grafana dashboards + ntfy alerts (Core 4 + DTC)
+                    ├── Web app (Go + templ + htmx, tailnet :8090) — Part 3
+                    ├── pg_dump backups → iCloud (rclone → cloud on real server)
+                    └── Claude API analysis (planned: on demand + weekly + DTC triggered)
 ```
 
 **Home server is temporarily a laptop** (the real mini-PC isn't bought yet — ~2 months).
-The backend runs as a Docker stack (Tailscale sidecar + PostgreSQL + Go API) on the laptop;
-see `backend/README.md`. The Pi reaches it over the private tailnet only.
+The backend + web app run as a Docker Compose stack (Tailscale sidecar + PostgreSQL + Go
+API + Grafana + web + backup) on the laptop; see `backend/README.md` and `backend/MIGRATION.md`.
+The Pi reaches it over the private tailnet only — **no public exposure**.
 
 ## Repo Layout
 ```

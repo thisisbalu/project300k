@@ -9,47 +9,43 @@ Not passive monitoring — active longevity engineering. The system catches prob
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         IN CAR                                  │
-│                                                                 │
-│   OBD Port                                                      │
-│      │                                                          │
-│   OBDLink MX+  ──(Bluetooth Classic)──►  Raspberry Pi 3B       │
-│   (dongle)                               │                      │
-│                                          │  USB BT dongle       │
-│                                          │  (BT Classic only)   │
-│                                          │                      │
-│                                          │  SQLite on USB drive │
-│                                          │  WAL mode, synced=0  │
-│                                          │                      │
-│                                          │  systemd services    │
-│                                          │  hardware watchdog   │
-└──────────────────────────────────────────┼──────────────────────┘
-                                           │
-                          iPhone hotspot   │  (WiFi, once per drive)
-                          auto-enabled via │  batch sync over Tailscale,
-                          iOS Shortcuts    │  then disconnect
-                                           │
-┌──────────────────────────────────────────▼──────────────────────┐
-│                       HOME SERVER                               │
-│                    (Dell OptiPlex / HP ProDesk Mini)            │
-│                    Ubuntu 24.04 LTS                             │
-│                                                                 │
-│   Golang API  ◄──── POST /sync (OBD rows + Pi health)          │
-│       │                                                         │
-│       ▼                                                         │
-│   PostgreSQL                                                    │
-│   ├── obd_readings                                              │
-│   ├── trips                                                     │
-│   ├── dtc_events                                                │
-│   └── pi_health_log                                             │
-│       │                                                         │
-│       ├──► Grafana dashboards + staleness alerts                │
-│       └──► Claude API analysis (on demand)                      │
-│                                                                 │
-│   Tailscale (remote SSH)                                        │
-│   Cloudflare Tunnel (public dashboard URL)                      │
-└─────────────────────────────────────────────────────────────────┘
+     ┌──────────────────────────────────────────────────────────────┐
+     │                            IN CAR                            │
+     │  ┌────────────────────────────────────────────────────────┐  │
+     │  │      OBDLink MX+  ──Bluetooth──►  Raspberry Pi 3B      │  │
+     │  │    Python OBD collector  ·  systemd  ·  HW watchdog    │  │
+     │  └────────────────────────────────────────────────────────┘  │
+     │  ┌────────────────────────────────────────────────────────┐  │
+     │  │     SQLite on USB drive  ·  WAL  ·  rows synced=0      │  │
+     │  └────────────────────────────────────────────────────────┘  │
+     └──────────────────────────────────────────────────────────────┘
+
+          once per drive  ·  iPhone hotspot  ·  private Tailscale
+                           (no public exposure)
+                                     ▼
+     ┌──────────────────────────────────────────────────────────────┐
+     │         HOME SERVER · laptop (temp) · Docker Compose         │
+     │  ┌────────────────────────────────────────────────────────┐  │
+     │  │    Go /sync API   ◄──  synced OBD rows + Pi health     │  │
+     │  └────────────────────────────────────────────────────────┘  │
+     │                               ▼                              │
+     │  ┌────────────────────────────────────────────────────────┐  │
+     │  │           PostgreSQL — 10-year health store            │  │
+     │  └────────────────────────────────────────────────────────┘  │
+     │                               ▼                              │
+     │  ┌────────────────────────────────────────────────────────┐  │
+     │  │    Grafana dashboards+alerts · Web :8090 · backups     │  │
+     │  └────────────────────────────────────────────────────────┘  │
+     └──────────────────────────────────────────────────────────────┘
+
+                                     ▼
+        ┌────────────────────────────────────────────────────────┐
+        │ Your phone — ntfy alerts · web app · Grafana (tailnet) │
+        └────────────────────────────────────────────────────────┘
+                                     ▼
+        ┌────────────────────────────────────────────────────────┐
+        │            Claude API analysis   (planned)             │
+        └────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -174,8 +170,12 @@ stopped, blue = up/connecting, green = data flowing, red = fault, amber = Pi
 warning. **LED B (Attention)** — dark when healthy, green-blink = trip active,
 blue = sync behind, magenta = recent DTC. See `pi/CLAUDE.md` for the full spec.
 
-### Home Server (~$350 CAD)
-Dell OptiPlex 7080 Micro or HP ProDesk 600 G6 Mini — 16GB+ RAM, 256GB+ NVMe, i7 10th gen.
+### Home Server (~$350 CAD, not yet bought)
+Target: Dell OptiPlex 7080 Micro or HP ProDesk 600 G6 Mini — 16GB+ RAM, 256GB+ NVMe, i7 10th gen.
+
+**Currently the backend runs on a laptop as a temporary server** (~2 months) until the
+mini-PC is bought; the move is a folder copy + `docker compose up` + a dump restore
+(see `backend/MIGRATION.md`).
 
 ---
 
@@ -186,21 +186,31 @@ Dell OptiPlex 7080 Micro or HP ProDesk 600 G6 Mini — 16GB+ RAM, 256GB+ NVMe, i
 | OBD collection | Python + python-obd (async mode) |
 | Local storage | SQLite (WAL mode, USB flash drive) |
 | Server database | PostgreSQL |
-| API | Golang |
-| Dashboards | Grafana |
-| AI analysis | Claude API (~$0.50 CAD/month) |
-| Remote access | Tailscale |
-| Public URL | Cloudflare Tunnel |
+| Sync API | Golang (stdlib `net/http` + pgx) |
+| Dashboards | Grafana (provisioned, on the tailnet) |
+| Web app | Go + templ + htmx (server-rendered, on the tailnet) |
+| Alerts | ntfy (push to phone) via Grafana alerting |
+| Backups | `pg_dump` → iCloud (rclone → cloud on the real server) |
+| AI analysis | Claude API (planned) |
+| Networking | Tailscale (private mesh — **no public exposure**) |
+
+The whole backend + web app runs as a Docker Compose stack (Tailscale sidecar +
+PostgreSQL + Go API + Grafana + web + backup). The Pi reaches it over the private
+tailnet only — there is no public endpoint.
 
 ---
 
-## Claude API Analysis
+## Claude API Analysis *(planned)*
 
-PostgreSQL pre-aggregates trip data → compact JSON (~3K–5K tokens) sent on demand.
+The intelligence layer — not yet built. PostgreSQL pre-aggregates recent trip data →
+compact JSON (~3K–5K tokens) → Claude API → a plain-English "what changed / what's
+drifting / what to watch" health summary, pushed to the phone via ntfy and surfaced in
+the web app.
 
-Checks: DTCs, coolant temp trends, fuel trim drift, O2 sensor health, battery voltage, idle RPM drift, fuel efficiency.
+Checks: DTCs, coolant/transmission temp trends, fuel trim drift, O2 sensor health,
+battery voltage, idle RPM drift, fuel efficiency.
 
-Returns: Red / Yellow / Green flags + plain English diagnosis.
+Returns: Red / Yellow / Green flags + plain-English diagnosis.
 
 ---
 
@@ -234,8 +244,11 @@ project300k/
 
 3. **Part 3 — Web dashboard** 🚧 *Phase A built*
    - **Done (Phase A):** server-rendered Go + templ + htmx app (`web` container on the
-     tailnet, `:8090`) — overview (300k progress, health verdict, last trip), trip
-     history, trip detail, DTC log. Mobile-first PWA.
+     tailnet, `:8090`) — overview (300k progress + true odometer, health verdict, last
+     trip, sync freshness), trip history, trip detail, DTC log. Server-rendered SVG
+     **sparkline trends** (no JS) on the overview (per-drive coolant/trans/battery/speed/
+     RPM/distance) and per-trip curves. Light theme, mobile-first PWA. Read-only on
+     Postgres; `DEMO_MODE` + synthetic seed for a future public demo.
    - **Pending:** Phase B service records (photo → Claude vision extraction → logbook),
      Phase C AI analysis.
 

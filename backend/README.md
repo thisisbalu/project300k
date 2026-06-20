@@ -1,10 +1,11 @@
-# Project 300K — Backend (Part 2, foundation slice)
+# Project 300K — Backend (Part 2)
 
-Home-server API that receives synced OBD data from the in-car Pi and writes it to
-PostgreSQL, plus Grafana dashboards over the tailnet. Built so far: PostgreSQL
-schema + migrations + the Go `/sync` API + tests, derived distance/odometer views,
-and provisioned Grafana dashboards. Claude API analysis, alerting, and backup are
-deferred to follow-up work.
+Home-server backend that receives synced OBD data from the in-car Pi and turns it
+into a monitored, backed-up, alerting health record. Built: PostgreSQL schema +
+migrations + the Go `/sync` API + tests, derived distance/odometer views, provisioned
+Grafana dashboards, ntfy alerts (Core 4 + DTC), and daily `pg_dump` backups → iCloud.
+Runs as a Docker Compose stack (Tailscale sidecar + Postgres + API + Grafana + web +
+backup) on a temporary laptop server. Claude API analysis is the main remaining piece.
 
 ## Contract (fixed by the Pi)
 
@@ -73,17 +74,22 @@ curl -fsS -X POST localhost:8080/sync/obd_1s -H "Authorization: Bearer $API_KEY"
 psql project300k_dev -c "select * from engine;"
 ```
 
-## Run with Docker (tailscale + db + api)
+## Run with Docker
 
-The whole stack runs as three containers tied together by `compose.yaml`:
+The whole stack runs as containers tied together by `compose.yaml`, all sharing the
+tailscale network namespace:
 
 - **tailscale** — a sidecar that joins your private tailnet (nothing installs on the
-  host). It owns the network namespace; `db` and `api` share it.
-- **api** — listens `0.0.0.0:8080`, so it's reachable on the laptop's **tailnet IP**
-  (that's how the Pi reaches it). Also published to `127.0.0.1:8080` for local dev.
+  host). It owns the network namespace; every other service shares it.
+- **api** — listens `0.0.0.0:8080`, reachable on the laptop's **tailnet IP** (that's how
+  the Pi reaches it). Also published to `127.0.0.1:8080` for local dev.
 - **db** — `postgres:16`, bound to `127.0.0.1` so it is **never exposed on the tailnet**;
-  the api reaches it over the shared loopback. Data lives in the `pgdata` volume on the
+  everything reaches it over the shared loopback. Data lives in the `pgdata` volume on the
   host, so rebuilding any container never touches it.
+- **grafana** — dashboards + ntfy alerts, on the tailnet at `:3000` (see **Alerts** / the
+  Grafana section).
+- **web** — the Part 3 frontend (Go + templ + htmx), tailnet `:8090` (see `../frontend`).
+- **backup** — daily `pg_dump` with rotation (see **Backups**).
 
 No public internet exposure: the Pi reaches the laptop only over the encrypted Tailscale
 mesh, with the `API_KEY` bearer token on top (both required).
