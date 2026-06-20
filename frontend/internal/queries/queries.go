@@ -430,6 +430,18 @@ func (s *Store) TrendDistance(ctx context.Context, days int) ([]float64, error) 
 		WHERE start_time > now() - make_interval(days => $1) ORDER BY start_time`, days)
 }
 
+func (s *Store) TrendOilPressureMin(ctx context.Context, days int) ([]float64, error) {
+	return s.floatSeries(ctx, `SELECT min(o.oil_pressure_kpa) FROM trips t JOIN ford_obd_10s o ON o.trip_id=t.id
+		WHERE t.start_time > now() - make_interval(days => $1)
+		GROUP BY t.id, t.start_time HAVING min(o.oil_pressure_kpa) IS NOT NULL ORDER BY t.start_time`, days)
+}
+
+func (s *Store) TrendKnockPeak(ctx context.Context, days int) ([]float64, error) {
+	return s.floatSeries(ctx, `SELECT max(o.knock_retard_deg) FROM trips t JOIN ford_obd_10s o ON o.trip_id=t.id
+		WHERE t.start_time > now() - make_interval(days => $1)
+		GROUP BY t.id, t.start_time HAVING max(o.knock_retard_deg) IS NOT NULL ORDER BY t.start_time`, days)
+}
+
 // Per-trip curves for the trip-detail page (time-ordered samples within one trip).
 
 func (s *Store) TripCurveCoolant(ctx context.Context, id string) ([]float64, error) {
