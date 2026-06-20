@@ -162,7 +162,8 @@ func (s *Server) tripCurves(ctx context.Context, id string) []views.Trend {
 			s.log.Warn("trip curve failed", "label", sp.label, "err", err)
 			continue
 		}
-		out = append(out, views.Trend{Label: sp.label, Unit: sp.unit, Values: vals, Color: sp.color, Threshold: sp.thr})
+		// Badge shows the drive's peak, not the end-of-drive sample.
+		out = append(out, views.Trend{Label: sp.label, Unit: sp.unit, Values: vals, Color: sp.color, Threshold: sp.thr, Stat: "max"})
 	}
 	return out
 }

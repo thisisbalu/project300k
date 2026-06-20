@@ -23,15 +23,25 @@ type Trend struct {
 	Color     string
 	Threshold float64 // >0 draws a dashed red-flag reference line
 	Bars      bool    // render as mini bars instead of a line
+	Stat      string  // badge value: "" / "last" (default), "max", "min"
 }
 
 func (t Trend) Has() bool { return len(t.Values) > 0 }
 
+// LastLabel renders the badge value. Default is the last point (overview: the most
+// recent drive). Per-trip curves use "max" because the last sample is end-of-drive
+// (speed/RPM = 0/idle at shutdown), which is meaningless as a summary.
 func (t Trend) LastLabel() string {
 	if len(t.Values) == 0 {
 		return "—"
 	}
 	v := t.Values[len(t.Values)-1]
+	switch t.Stat {
+	case "max":
+		_, v = minMax(t.Values)
+	case "min":
+		v, _ = minMax(t.Values)
+	}
 	switch t.Unit {
 	case "°C":
 		return degC(v)
