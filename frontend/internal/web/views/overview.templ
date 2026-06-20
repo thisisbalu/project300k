@@ -33,6 +33,14 @@ templ Overview(d PageData) {
 				<span>{ pct(d.ProgressPct()) } there</span>
 				<span>{ km1(d.Lifetime.TotalKm) } logged · { fmt.Sprintf("%d", d.Lifetime.TripCount) } trips</span>
 			</div>
+			if d.HasCadence {
+				<div class="projection">
+					<span class="projection-eta">{ d.ProjectionText() }</span>
+					<span class="projection-detail">
+						~{ km(d.KmPerMonth()) }/month · on track for { d.ETA300k().Format("Jan 2006") }
+					</span>
+				</div>
+			}
 			if d.BaselineKm == 0 {
 				<p class="hint">Tip: set <code>ODOMETER_BASELINE_KM</code> to your dash reading on day one for a true odometer.</p>
 			}
@@ -67,5 +75,30 @@ templ Overview(d PageData) {
 				}
 			</section>
 		</div>
+		if d.HasLogger {
+			<section class="card">
+				<h2>Logger health <span class="per-drive">the in-car Pi</span></h2>
+				<div class="kv">
+					<span>USB free</span>
+					<b class={ templ.KV("warn", lowDisk(d.Logger.DiskFreeMb)) }>{ disk(d.Logger.DiskFreeMb) }</b>
+				</div>
+				<div class="kv"><span>CPU temp</span><b>{ optTempC(d.Logger.CPUTempC) }</b></div>
+				<div class="kv"><span>Uptime</span><b>{ uptimeShort(d.Logger.UptimeS) }</b></div>
+				<div class="kv"><span>BT reconnects</span><b>{ optCount(d.Logger.ReconnectCount) }</b></div>
+				<div class="kv"><span>Restarts</span><b>{ optCount(d.Logger.RestartCount) }</b></div>
+				<div class="kv">
+					<span>USB mount</span>
+					<b class={ templ.KV("warn", !flagGood(d.Logger.USBMounted)) }>{ flag(d.Logger.USBMounted, "mounted", "MISSING") }</b>
+				</div>
+				<div class="kv">
+					<span>Clock (RTC)</span>
+					<b class={ templ.KV("warn", !flagGood(d.Logger.RTCOk)) }>{ flag(d.Logger.RTCOk, "ok", "drift") }</b>
+				</div>
+				if d.Logger.LastError != nil && *d.Logger.LastError != "" {
+					<div class="kv"><span>Last error</span><b class="warn">{ *d.Logger.LastError }</b></div>
+				}
+				<p class="hint">Snapshot from { ago(d.Logger.At) } (last sync).</p>
+			</section>
+		}
 	}
 }

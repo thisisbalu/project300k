@@ -65,6 +65,14 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, "last sync", err)
 		return
 	}
+	if d.Logger, d.HasLogger, err = s.q.LoggerHealth(ctx); err != nil {
+		s.fail(w, "logger health", err)
+		return
+	}
+	if d.Cadence, d.HasCadence, err = s.q.Cadence(ctx); err != nil {
+		s.fail(w, "cadence", err)
+		return
+	}
 	d.Trends = s.overviewTrends(ctx)
 	s.render(w, r, views.Overview(d))
 }

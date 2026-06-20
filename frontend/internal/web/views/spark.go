@@ -58,6 +58,19 @@ func (t Trend) LastLabel() string {
 	}
 }
 
+// StatLabel describes which value the badge shows, so the mixed cards (some
+// badge the 30-day worst case, some the most recent drive) are self-explanatory.
+func (t Trend) StatLabel() string {
+	switch t.Stat {
+	case "max":
+		return "30-day max"
+	case "min":
+		return "30-day low"
+	default:
+		return "last drive"
+	}
+}
+
 // SVG renders the sparkline markup (used via @templ.Raw in the views).
 func (t Trend) SVG() string {
 	if t.Bars {

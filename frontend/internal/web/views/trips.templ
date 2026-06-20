@@ -70,6 +70,25 @@ templ TripDetail(t queries.Trip, p queries.TripPeaks, dtcs []queries.DTC, curves
 				<div class="kv"><span>Transmission</span><b>{ optDeg(p.MaxTransC) }</b></div>
 				<div class="kv"><span>Battery min/max</span><b>{ optVolts(p.MinBatteryV) } / { optVolts(p.MaxBatteryV) }</b></div>
 			</section>
+			<section class="card">
+				<h2>Engine internals <span class="per-drive">longevity signals</span></h2>
+				<div class="kv"><span>Oil pressure (min)</span><b>{ optKpa(p.MinOilPressureKpa) }</b></div>
+				<div class="kv">
+					<span>Knock retard (max)</span>
+					<b class={ templ.KV("warn", p.MaxKnockRetard != nil && *p.MaxKnockRetard > 0) }>{ optDegRet(p.MaxKnockRetard) }</b>
+				</div>
+				<div class="kv"><span>Boost desired/actual</span><b>{ optPsi(p.MaxBoostDesired) } / { optPsi(p.MaxBoostActual) }</b></div>
+				<div class="kv">
+					<span>Misfires</span>
+					if !p.HasMisfireData {
+						<b>—</b>
+					} else if p.MisfireTotal == 0 {
+						<b>none</b>
+					} else {
+						<b class="warn">{ fmt.Sprintf("%d", p.MisfireTotal) }</b>
+					}
+				</div>
+			</section>
 		</div>
 		<section class="card">
 			<h2>Fault codes this trip</h2>

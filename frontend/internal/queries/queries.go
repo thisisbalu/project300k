@@ -99,6 +99,14 @@ type TripPeaks struct {
 	MaxTransC   *float64
 	MinBatteryV *float64
 	MaxBatteryV *float64
+
+	// Engine-internals longevity signals.
+	MinOilPressureKpa *float64
+	MaxKnockRetard    *float64
+	MaxBoostDesired   *float64
+	MaxBoostActual    *float64
+	MisfireTotal      int64 // sum across cylinders; 0 = clean
+	HasMisfireData    bool
 }
 
 func (s *Store) TripByID(ctx context.Context, id string) (Trip, bool, error) {
@@ -132,6 +140,26 @@ func (s *Store) TripPeaks(ctx context.Context, id string) (TripPeaks, error) {
 		Scan(&p.MinBatteryV, &p.MaxBatteryV); err != nil {
 		return p, err
 	}
+	if err := s.pool.QueryRow(ctx,
+		`SELECT min(oil_pressure_kpa), max(knock_retard_deg),
+		        max(boost_desired_psi), max(boost_actual_psi)
+		 FROM ford_obd_10s WHERE trip_id=$1`, id).
+		Scan(&p.MinOilPressureKpa, &p.MaxKnockRetard, &p.MaxBoostDesired, &p.MaxBoostActual); err != nil {
+		return p, err
+	}
+	// Misfire counters accumulate within a drive, so the per-cylinder max ≈ that
+	// drive's total; summing the four cylinders gives the trip's misfire count.
+	// rows>0 means the car reported misfire data (so 0 = a genuinely clean drive).
+	var rows int64
+	if err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*),
+		        COALESCE(max(misfire_acc_cyl1),0) + COALESCE(max(misfire_acc_cyl2),0)
+		      + COALESCE(max(misfire_acc_cyl3),0) + COALESCE(max(misfire_acc_cyl4),0)
+		 FROM ford_obd_20s WHERE trip_id=$1`, id).
+		Scan(&rows, &p.MisfireTotal); err != nil {
+		return p, err
+	}
+	p.HasMisfireData = rows > 0
 	return p, nil
 }
 
@@ -239,6 +267,74 @@ func (s *Store) Health(ctx context.Context) (Verdict, error) {
 		v.Reasons = append(v.Reasons, "All monitored systems within normal range")
 	}
 	return v, nil
+}
+
+// LoggerHealth is the latest snapshot of the in-car Pi's own health — is the data
+// pipeline itself alive and will the USB drive last to 300k.
+type LoggerHealth struct {
+	At             time.Time
+	CPUTempC       *float64
+	DiskFreeMb     *float64
+	MemFreeMb      *float64
+	UptimeS        *int64
+	USBMounted     *int
+	BTPresent      *int
+	ReconnectCount *int
+	RestartCount   *int
+	RTCOk          *int
+	LastError      *string
+}
+
+// LoggerHealth returns the most recent pi_health_log row, or ok=false if none.
+func (s *Store) LoggerHealth(ctx context.Context) (LoggerHealth, bool, error) {
+	var h LoggerHealth
+	err := s.pool.QueryRow(ctx, `
+		SELECT timestamp, cpu_temp_c, disk_free_mb, memory_free_mb, uptime_s,
+		       usb_drive_mounted, bt_adapter_present, obd_reconnect_count,
+		       restart_count, rtc_ok, last_error
+		FROM pi_health_log ORDER BY timestamp DESC LIMIT 1`).
+		Scan(&h.At, &h.CPUTempC, &h.DiskFreeMb, &h.MemFreeMb, &h.UptimeS,
+			&h.USBMounted, &h.BTPresent, &h.ReconnectCount, &h.RestartCount,
+			&h.RTCOk, &h.LastError)
+	if err != nil {
+		if isNoRows(err) {
+			return LoggerHealth{}, false, nil
+		}
+		return LoggerHealth{}, false, err
+	}
+	return h, true, nil
+}
+
+// Cadence is the recent driving rate used to project time-to-300k.
+type Cadence struct {
+	KmPerDay float64
+	Days     float64 // span of data the rate is based on
+}
+
+// Cadence computes the average logged km/day over the available trip history
+// (capped to the most recent 90 days so the projection reflects current usage).
+func (s *Store) Cadence(ctx context.Context) (Cadence, bool, error) {
+	var c Cadence
+	err := s.pool.QueryRow(ctx, `
+		WITH recent AS (
+			SELECT distance_km, start_time FROM trip_summary
+			WHERE start_time > now() - interval '90 days'
+		)
+		SELECT COALESCE(sum(distance_km), 0),
+		       GREATEST(EXTRACT(EPOCH FROM (max(start_time) - min(start_time))) / 86400.0, 0)
+		FROM recent`).Scan(&c.KmPerDay, &c.Days)
+	if err != nil {
+		return Cadence{}, false, err
+	}
+	totalKm := c.KmPerDay // currently holds sum(distance_km)
+	if c.Days < 1 {
+		return Cadence{}, false, nil // not enough history to project
+	}
+	c.KmPerDay = totalKm / c.Days
+	if c.KmPerDay <= 0 {
+		return Cadence{}, false, nil
+	}
+	return c, true, nil
 }
 
 // LastSync returns the most recent pi_health_log timestamp (proxy for "last time

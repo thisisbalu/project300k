@@ -9,7 +9,10 @@ templ trendsGrid(trends []Trend) {
 				<div class="trend">
 					<div class="trend-top">
 						<span class="trend-label">{ t.Label }</span>
-						<span class="trend-last">{ t.LastLabel() }</span>
+						<span class="trend-value">
+							<span class="trend-last">{ t.LastLabel() }</span>
+							<span class="trend-stat">{ t.StatLabel() }</span>
+						</span>
 					</div>
 					@templ.Raw(t.SVG())
 				</div>

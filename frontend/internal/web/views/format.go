@@ -20,6 +20,10 @@ type PageData struct {
 	HasSync    bool
 	Demo       bool
 	Trends     []Trend
+	Logger     queries.LoggerHealth
+	HasLogger  bool
+	Cadence    queries.Cadence
+	HasCadence bool
 }
 
 // OdometerKm is the true odometer estimate: dash baseline + logged distance.
@@ -35,6 +39,35 @@ func (d PageData) ProgressPct() float64 {
 		return 100
 	}
 	return p
+}
+
+// KmPerMonth is the recent driving rate, for the projection line.
+func (d PageData) KmPerMonth() float64 { return d.Cadence.KmPerDay * 30.0 }
+
+// YearsTo300k projects, at the recent rate, how long until 300,000 km.
+func (d PageData) YearsTo300k() float64 {
+	remaining := 300000.0 - d.OdometerKm()
+	if remaining <= 0 || d.Cadence.KmPerDay <= 0 {
+		return 0
+	}
+	return remaining / (d.Cadence.KmPerDay * 365.0)
+}
+
+// ETA300k is the projected calendar date of crossing 300,000 km.
+func (d PageData) ETA300k() time.Time {
+	return time.Now().AddDate(0, 0, int(d.YearsTo300k()*365.0+0.5))
+}
+
+func (d PageData) ProjectionText() string {
+	y := d.YearsTo300k()
+	switch {
+	case y <= 0:
+		return "Arrived"
+	case y < 1:
+		return fmt.Sprintf("~%d months to go", int(y*12+0.5))
+	default:
+		return fmt.Sprintf("~%.1f years to go", y)
+	}
 }
 
 func km(v float64) string    { return grouped(int64(v+0.5)) + " km" }
@@ -130,6 +163,85 @@ func optDur(v *int) string {
 	}
 	return dur(*v)
 }
+func optKpa(v *float64) string {
+	if v == nil {
+		return "—"
+	}
+	return fmt.Sprintf("%.0f kPa", *v)
+}
+func optPsi(v *float64) string {
+	if v == nil {
+		return "—"
+	}
+	return fmt.Sprintf("%.1f psi", *v)
+}
+func optDegRet(v *float64) string {
+	if v == nil {
+		return "—"
+	}
+	return fmt.Sprintf("%.1f°", *v)
+}
+
+// disk renders a free-space figure (stored in MB) as MB/GB.
+func disk(v *float64) string {
+	if v == nil {
+		return "—"
+	}
+	if *v >= 1024 {
+		return fmt.Sprintf("%.1f GB", *v/1024)
+	}
+	return fmt.Sprintf("%.0f MB", *v)
+}
+func optTempC(v *float64) string {
+	if v == nil {
+		return "—"
+	}
+	return degC(*v)
+}
+func optCount(v *int) string {
+	if v == nil {
+		return "—"
+	}
+	return fmt.Sprintf("%d", *v)
+}
+
+// lowDisk flags when the USB free space (MB) is getting tight (< 1 GB).
+func lowDisk(v *float64) bool { return v != nil && *v < 1024 }
+
+// flagGood reports whether a 0/1 health flag is in its good (1) state. A nil
+// reading is treated as good so we don't cry wolf on missing data.
+func flagGood(v *int) bool { return v == nil || *v == 1 }
+
+// flag renders a 0/1 health flag as a word; flagOK reports whether it's the good state.
+func flag(v *int, good, bad string) string {
+	if v == nil {
+		return "—"
+	}
+	if *v == 1 {
+		return good
+	}
+	return bad
+}
+
+// uptimeShort renders seconds as "3d 4h" / "5h 12m" / "8m".
+func uptimeShort(v *int64) string {
+	if v == nil {
+		return "—"
+	}
+	d := time.Duration(*v) * time.Second
+	days := int(d.Hours()) / 24
+	h := int(d.Hours()) % 24
+	m := int(d.Minutes()) % 60
+	switch {
+	case days > 0:
+		return fmt.Sprintf("%dd %dh", days, h)
+	case h > 0:
+		return fmt.Sprintf("%dh %dm", h, m)
+	default:
+		return fmt.Sprintf("%dm", m)
+	}
+}
+
 func deref[T any](p *T, def T) T {
 	if p == nil {
 		return def
