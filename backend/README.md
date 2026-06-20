@@ -137,6 +137,40 @@ One-time tailnet setup:
 > `caffeinate -s` helps. If it sleeps, syncs just pause — no data is lost; the Pi keeps its
 > backlog and retries.
 
+### Alerts (ntfy)
+
+Grafana watches the same thresholds the dashboards show and pushes to your phone
+via **ntfy** (free, no account) — provisioned from `grafana/provisioning/alerting/`
+(versioned in git), so it lifts to the real server unchanged.
+
+**Setup:** install the ntfy app, set `NTFY_TOPIC` in `.env` to a long random string,
+and **subscribe to that topic** in the app. (ntfy topics are public-by-name — the
+random name is the privacy.)
+
+**How it works:** each rule runs a SQL query over a recent window (3–7 days, since
+the Pi syncs once per drive so data lands a drive late), reduces it to one value,
+and thresholds it; evaluation every 10 min. Grafana POSTs its standard JSON to ntfy,
+and **ntfy's server-side templating** (`tpl=yes` in the contact-point URL) renders a
+clean title/message/priority from it — no fragile JSON-in-template escaping.
+
+> Alerts are **early-warning on review**, not real-time: a drive's data is evaluated
+> at the start of the *next* drive. Mid-drive emergencies are out of scope (that would
+> need the Pi to alert locally).
+
+Rules (Core 4 + DTC), thresholds match the dashboards:
+
+| Alert | Fires when | Severity |
+|-------|-----------|----------|
+| Coolant overheating | max coolant > 110 °C (3 d) | high → ntfy urgent |
+| Transmission overheating | max trans temp > 120 °C (3 d) | high → urgent |
+| Charging fault | max battery < 13.0 V (3 d) — alternator not charging | high → urgent |
+| Battery weakening | 10th-pct battery < 12.0 V (7 d) | warning → high |
+| New DTC fault code | any `dtc_events` row (3 d) | high → urgent |
+
+Repeats throttled to 4 h so a breach lingering across drives doesn't re-buzz.
+Tune a threshold by editing `grafana/provisioning/alerting/rules.yaml` and
+`docker compose restart grafana`.
+
 ### Backups
 
 A `backup` container (postgres:16, so `pg_dump` matches the server) runs a daily
@@ -195,5 +229,6 @@ and auth/unknown-table handling.
 
 ## Deferred (follow-up plans)
 
-Claude API analysis · ntfy/email alerts · rclone push for backups (on the real
-server) · server provisioning · more dashboards (Engine, Boost, Fueling, Pi health).
+Claude API analysis · rclone push for backups (on the real server) · server
+provisioning · more dashboards (Engine, Boost, Fueling, Pi health) · more alert
+rules (misfire-climbing, Pi-health/no-sync).

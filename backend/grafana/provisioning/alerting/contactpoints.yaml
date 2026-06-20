@@ -1,0 +1,27 @@
+# ntfy contact point.
+#
+# Grafana posts its STANDARD webhook JSON body (status, commonLabels,
+# commonAnnotations, alerts…). ntfy's server-side templating (`tpl=yes`) then
+# renders the title/message/priority from that JSON via the query-string templates
+# below — so notifications arrive cleanly formatted, with no fragile JSON-inside-
+# Go-template escaping on our side. (ntfy templating drives title/message/priority
+# but NOT tags, so the tag is fixed.)
+#
+# Templates (URL-decoded for reference):
+#   title    = {{if eq .status "firing"}}🚗 {{else}}✅ {{end}}{{.commonLabels.alertname}}
+#   message  = {{.commonAnnotations.summary}}
+#   priority = firing+high→urgent, firing+warning→high, resolved→default
+#
+# Server + topic come from the container env (set from .env) so the private topic
+# is never committed.
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: ntfy
+    receivers:
+      - uid: ntfy-default
+        type: webhook
+        settings:
+          url: ${NTFY_SERVER}/${NTFY_TOPIC}?tpl=yes&title=%7B%7Bif%20eq%20.status%20%22firing%22%7D%7D%F0%9F%9A%97%20%7B%7Belse%7D%7D%E2%9C%85%20%7B%7Bend%7D%7D%7B%7B.commonLabels.alertname%7D%7D&message=%7B%7B.commonAnnotations.summary%7D%7D&priority=%7B%7Bif%20eq%20.status%20%22firing%22%7D%7D%7B%7Bif%20eq%20.commonLabels.severity%20%22high%22%7D%7Durgent%7B%7Belse%7D%7Dhigh%7B%7Bend%7D%7D%7B%7Belse%7D%7Ddefault%7B%7Bend%7D%7D&tags=blue_car
+          httpMethod: POST

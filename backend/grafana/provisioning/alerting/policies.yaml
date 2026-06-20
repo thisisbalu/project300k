@@ -1,0 +1,12 @@
+# Notification routing: everything goes to the ntfy contact point. Grouping by
+# alertname so each distinct alert notifies on its own; repeats are throttled to
+# 4h so a breach that lingers across several drives doesn't re-buzz constantly.
+apiVersion: 1
+
+policies:
+  - orgId: 1
+    receiver: ntfy
+    group_by: ["alertname"]
+    group_wait: 30s
+    group_interval: 5m
+    repeat_interval: 4h

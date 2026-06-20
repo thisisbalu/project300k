@@ -99,6 +99,9 @@ services:
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
       # Consumed by the provisioned Postgres datasource (grafana/provisioning).
       PG_PASSWORD: ${DB_PASSWORD:?set DB_PASSWORD in .env}
+      # Consumed by the provisioned ntfy contact point (grafana/provisioning/alerting).
+      NTFY_SERVER: ${NTFY_SERVER:-https://ntfy.sh}
+      NTFY_TOPIC: ${NTFY_TOPIC:?set NTFY_TOPIC in .env}
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro

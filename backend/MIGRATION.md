@@ -40,6 +40,7 @@ Start from `.env.example`. Most values carry over; these **must change**:
 | `API_KEY` | **Keep identical to the Pi's** value (reuse the laptop's) — otherwise you must also update the Pi in step 5. |
 | `DB_PASSWORD` | Generate fresh: `openssl rand -hex 16`. |
 | `GF_ADMIN_PASSWORD` | Generate fresh: `openssl rand -hex 16`. |
+| `NTFY_TOPIC` | **Keep the same** as the laptop's — your phone is already subscribed to it, so alerts keep working with no app change. |
 | `BACKUP_DIR` | Change to a **local Linux path**, e.g. `/srv/project300k-backups` (no iCloud on Linux). |
 | `TZ` | The server's timezone. |
 
