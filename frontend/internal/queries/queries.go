@@ -479,6 +479,14 @@ func (s *Store) TrendLtftAvg(ctx context.Context, days int) ([]float64, error) {
 		GROUP BY t.id, t.start_time HAVING avg(o.ltft_pct) IS NOT NULL ORDER BY t.start_time`, days)
 }
 
+// TrendLoadPeak is each drive's peak engine load (%) — the descriptive companion
+// to boost: how hard the engine worked.
+func (s *Store) TrendLoadPeak(ctx context.Context, days int) ([]float64, error) {
+	return s.floatSeries(ctx, `SELECT max(o.load_pct) FROM trips t JOIN obd_1s o ON o.trip_id=t.id
+		WHERE t.start_time > now() - make_interval(days => $1)
+		GROUP BY t.id, t.start_time HAVING max(o.load_pct) IS NOT NULL ORDER BY t.start_time`, days)
+}
+
 // TrendBoostMax is each drive's peak boost (psi), derived from MAP − barometric.
 // Watch the upper envelope stay flat over time — a decline in achievable peak
 // boost flags a leak / turbo wear (no threshold: it's demand-driven, not a limit).

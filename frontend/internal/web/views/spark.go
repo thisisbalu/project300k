@@ -75,6 +75,8 @@ func (t Trend) LastLabel() string {
 		return fmt.Sprintf("%.3f%%", v)
 	case "%ft": // fuel trim — single decimal, may be negative
 		return fmt.Sprintf("%.1f%%", v)
+	case "%": // whole-number percent (engine load)
+		return fmt.Sprintf("%.0f%%", v)
 	default:
 		return fmt.Sprintf("%.0f %s", v, t.Unit)
 	}

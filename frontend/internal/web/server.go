@@ -103,6 +103,7 @@ func (s *Server) overviewTrends(ctx context.Context) []views.Trend {
 		{"Misfire rate / drive", "%mf", "#7c3aed", 0.5, false, "max", s.q.TrendMisfireRate},
 		{"Fuel trim (LTFT) / drive", "%ft", "#0891b2", 10, false, "", s.q.TrendLtftAvg},
 		{"Max boost / drive", "psi", "#2563eb", 0, false, "max", s.q.TrendBoostMax},
+		{"Engine load peak / drive", "%", "#d97706", 0, false, "", s.q.TrendLoadPeak},
 		{"Engine RPM peak / drive", "rpm", "#e0529c", 0, false, "", s.q.TrendRpmPeak},
 		{"Intake air peak / drive", "°C", "#7a5af5", 0, false, "", s.q.TrendIntakePeak},
 		{"Ambient temp / drive", "°C", "#0d9488", 0, false, "", s.q.TrendAmbientAvg},
