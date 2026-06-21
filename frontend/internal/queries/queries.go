@@ -479,6 +479,15 @@ func (s *Store) TrendLtftAvg(ctx context.Context, days int) ([]float64, error) {
 		GROUP BY t.id, t.start_time HAVING avg(o.ltft_pct) IS NOT NULL ORDER BY t.start_time`, days)
 }
 
+// TrendBoostMax is each drive's peak boost (psi), derived from MAP − barometric.
+// Watch the upper envelope stay flat over time — a decline in achievable peak
+// boost flags a leak / turbo wear (no threshold: it's demand-driven, not a limit).
+func (s *Store) TrendBoostMax(ctx context.Context, days int) ([]float64, error) {
+	return s.floatSeries(ctx, `SELECT max(GREATEST((o.map_kpa - o.baro_pressure_kpa)/6.895, 0)) FROM trips t JOIN obd_5s o ON o.trip_id=t.id
+		WHERE t.start_time > now() - make_interval(days => $1) AND o.map_kpa IS NOT NULL AND o.baro_pressure_kpa IS NOT NULL
+		GROUP BY t.id, t.start_time ORDER BY t.start_time`, days)
+}
+
 // TrendMisfireRate is each drive's misfire rate (%) — misfires ÷ combustion
 // events — one point per drive, so drive length doesn't distort it.
 func (s *Store) TrendMisfireRate(ctx context.Context, days int) ([]float64, error) {
