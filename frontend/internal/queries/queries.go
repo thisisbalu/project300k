@@ -103,8 +103,9 @@ type TripPeaks struct {
 	// Engine-internals longevity signals.
 	MinOilPressureKpa *float64
 	MaxKnockRetard    *float64
-	MaxBoostDesired   *float64
-	MaxBoostActual    *float64
+	// Boost derived from MAP − barometric (the dedicated boost PIDs read a
+	// constant 0 on this car — see the Pi boost-PID investigation TODO).
+	MaxBoostPsi *float64
 	// MisfireRatePct is misfires ÷ combustion events × 100 — drive-length
 	// independent (a long drive has more events, so a raw count would mislead).
 	// nil when the trip has no usable RPM data; 0 = a genuinely clean drive.
@@ -143,10 +144,14 @@ func (s *Store) TripPeaks(ctx context.Context, id string) (TripPeaks, error) {
 		return p, err
 	}
 	if err := s.pool.QueryRow(ctx,
-		`SELECT min(oil_pressure_kpa), max(knock_retard_deg),
-		        max(boost_desired_psi), max(boost_actual_psi)
-		 FROM ford_obd_10s WHERE trip_id=$1`, id).
-		Scan(&p.MinOilPressureKpa, &p.MaxKnockRetard, &p.MaxBoostDesired, &p.MaxBoostActual); err != nil {
+		`SELECT min(oil_pressure_kpa), max(knock_retard_deg) FROM ford_obd_10s WHERE trip_id=$1`, id).
+		Scan(&p.MinOilPressureKpa, &p.MaxKnockRetard); err != nil {
+		return p, err
+	}
+	if err := s.pool.QueryRow(ctx,
+		`SELECT max(GREATEST((map_kpa - baro_pressure_kpa) / 6.895, 0))
+		 FROM obd_5s WHERE trip_id=$1 AND map_kpa IS NOT NULL AND baro_pressure_kpa IS NOT NULL`, id).
+		Scan(&p.MaxBoostPsi); err != nil {
 		return p, err
 	}
 	// Misfire counters accumulate within a drive, so the per-cylinder max ≈ that
@@ -510,27 +515,13 @@ func (s *Store) TripCurveKnockRetard(ctx context.Context, id string) ([]float64,
 	return s.floatSeries(ctx, `SELECT knock_retard_deg FROM ford_obd_10s WHERE trip_id=$1 AND knock_retard_deg IS NOT NULL ORDER BY timestamp`, id)
 }
 
-// TripCurveBoost returns the desired and actual boost curves as two aligned,
-// time-ordered series (the gap between them is the turbo/wastegate health signal).
-func (s *Store) TripCurveBoost(ctx context.Context, id string) (desired, actual []float64, err error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT COALESCE(boost_desired_psi, 0), COALESCE(boost_actual_psi, 0)
-		FROM ford_obd_10s
-		WHERE trip_id=$1 AND (boost_desired_psi IS NOT NULL OR boost_actual_psi IS NOT NULL)
+// TripCurveBoost returns the actual boost curve, derived from MAP − barometric
+// (the dedicated boost PIDs read a constant 0 on this car). Vacuum is clamped to
+// 0 so the curve reads as "boost psi": flat at cruise, rising under load.
+func (s *Store) TripCurveBoost(ctx context.Context, id string) ([]float64, error) {
+	return s.floatSeries(ctx, `SELECT GREATEST((map_kpa - baro_pressure_kpa) / 6.895, 0)
+		FROM obd_5s WHERE trip_id=$1 AND map_kpa IS NOT NULL AND baro_pressure_kpa IS NOT NULL
 		ORDER BY timestamp`, id)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var d, a float64
-		if err := rows.Scan(&d, &a); err != nil {
-			return nil, nil, err
-		}
-		desired = append(desired, d)
-		actual = append(actual, a)
-	}
-	return desired, actual, rows.Err()
 }
 
 func isNoRows(err error) bool {

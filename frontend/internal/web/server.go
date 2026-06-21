@@ -176,6 +176,8 @@ func (s *Server) tripCurves(ctx context.Context, id string) []views.Trend {
 		{"Battery", "V", "#2563eb", 0, false, s.q.TripCurveBattery},
 		{"Oil pressure", "kPa", "#0d9488", 200, true, s.q.TripCurveOilPressure},
 		{"Knock retard", "°", "#d22f2f", 6, false, s.q.TripCurveKnockRetard},
+		// Boost derived from MAP − baro (the boost PIDs read a constant 0).
+		{"Boost", "psi", "#2563eb", 0, false, s.q.TripCurveBoost},
 	}
 	var out []views.Trend
 	for _, sp := range specs {
@@ -186,16 +188,6 @@ func (s *Server) tripCurves(ctx context.Context, id string) []views.Trend {
 		}
 		// Badge shows the drive's peak, not the end-of-drive sample.
 		out = append(out, views.Trend{Label: sp.label, Unit: sp.unit, Values: vals, Color: sp.color, Threshold: sp.thr, ThresholdFloor: sp.floor, Stat: "max"})
-	}
-	// Boost is a dual line — actual measured against the ECU's desired target.
-	if desired, actual, err := s.q.TripCurveBoost(ctx, id); err != nil {
-		s.log.Warn("trip curve failed", "label", "Boost", "err", err)
-	} else if len(actual) > 0 {
-		out = append(out, views.Trend{
-			Label: "Boost", Unit: "psi", Stat: "max",
-			Values: actual, Color: "#2563eb", LegendA: "actual",
-			Values2: desired, Color2: "#9aa7bd", LegendB: "desired",
-		})
 	}
 	return out
 }

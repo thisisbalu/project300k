@@ -77,7 +77,7 @@ templ TripDetail(t queries.Trip, p queries.TripPeaks, dtcs []queries.DTC, curves
 					<span>Knock retard (max)</span>
 					<b class={ templ.KV("warn", p.MaxKnockRetard != nil && *p.MaxKnockRetard > 0) }>{ optDegRet(p.MaxKnockRetard) }</b>
 				</div>
-				<div class="kv"><span>Boost desired/actual</span><b>{ optPsi(p.MaxBoostDesired) } / { optPsi(p.MaxBoostActual) }</b></div>
+				<div class="kv"><span>Boost (max)</span><b>{ optPsi(p.MaxBoostPsi) }</b></div>
 				<div class="kv">
 					<span>Misfire rate</span>
 					<b class={ templ.KV("warn", p.MisfireRatePct != nil && *p.MisfireRatePct > 0.5) }>{ optRatePct(p.MisfireRatePct) }</b>
