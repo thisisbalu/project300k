@@ -78,6 +78,7 @@ h2 { font-size: 1rem; margin: 0 0 12px; color: var(--muted); font-weight: 600; t
 .projection-detail { color: var(--muted); font-size: 0.85rem; margin-left: 8px; }
 @media (max-width: 480px) { .projection-detail { display: block; margin: 2px 0 0; } }
 .kv b.warn { color: var(--red); }
+.kv-sub { color: var(--muted); font-weight: 400; font-size: 0.85em; }
 .hint { color: var(--muted); font-size: 0.85rem; margin-bottom: 0; }
 .empty { color: var(--muted); }
 .more, .back { display: inline-block; margin-top: 10px; }

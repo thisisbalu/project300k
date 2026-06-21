@@ -85,7 +85,10 @@ templ Overview(d PageData) {
 				<div class="kv"><span>CPU temp</span><b>{ optTempC(d.Logger.CPUTempC) }</b></div>
 				<div class="kv"><span>Uptime</span><b>{ uptimeShort(d.Logger.UptimeS) }</b></div>
 				<div class="kv"><span>BT reconnects</span><b>{ optCount(d.Logger.ReconnectCount) }</b></div>
-				<div class="kv"><span>Restarts</span><b>{ optCount(d.Logger.RestartCount) }</b></div>
+				<div class="kv">
+					<span>Restarts (7d)</span>
+					<b>{ optCount(d.Logger.Restarts7d) } <span class="kv-sub">/ { optCount(d.Logger.RestartCount) } total</span></b>
+				</div>
 				<div class="kv">
 					<span>USB mount</span>
 					<b class={ templ.KV("warn", !flagGood(d.Logger.USBMounted)) }>{ flag(d.Logger.USBMounted, "mounted", "MISSING") }</b>

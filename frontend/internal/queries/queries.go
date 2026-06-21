@@ -234,7 +234,7 @@ type Verdict struct {
 func (s *Store) Health(ctx context.Context) (Verdict, error) {
 	var (
 		maxCoolant, maxTrans, maxBattery, p10Battery *float64
-		p05Oil, maxKnock, misfireRate                *float64
+		p05Oil, maxKnock, misfireRate, avgLtft       *float64
 		dtcCount                                      int64
 	)
 	_ = s.pool.QueryRow(ctx, `SELECT max(coolant_temp_c) FROM obd_5s WHERE timestamp > now() - interval '3 days'`).Scan(&maxCoolant)
@@ -245,6 +245,7 @@ func (s *Store) Health(ctx context.Context) (Verdict, error) {
 	// sustained drop pulls the 5th percentile below the 200 kPa floor.
 	_ = s.pool.QueryRow(ctx, `SELECT percentile_cont(0.05) WITHIN GROUP (ORDER BY oil_pressure_kpa) FROM ford_obd_10s WHERE timestamp > now() - interval '3 days' AND oil_pressure_kpa IS NOT NULL`).Scan(&p05Oil)
 	_ = s.pool.QueryRow(ctx, `SELECT max(knock_retard_deg) FROM ford_obd_10s WHERE timestamp > now() - interval '3 days'`).Scan(&maxKnock)
+	_ = s.pool.QueryRow(ctx, `SELECT avg(ltft_pct) FROM obd_5s WHERE timestamp > now() - interval '3 days' AND ltft_pct IS NOT NULL`).Scan(&avgLtft)
 	// Aggregate misfire rate over the window: sum each drive's misfires and
 	// combustion events separately, then divide — keeps numerator and denominator
 	// over the same drives (a window-max count over total-window events would lie).
@@ -292,6 +293,9 @@ func (s *Store) Health(ctx context.Context) (Verdict, error) {
 	if misfireRate != nil && *misfireRate > 0.5 {
 		amber("Misfire rate elevated")
 	}
+	if avgLtft != nil && (*avgLtft > 10 || *avgLtft < -10) {
+		amber("Fuel trim drifting (intake leak / sensor?)")
+	}
 	if len(v.Reasons) == 0 {
 		v.Reasons = append(v.Reasons, "All monitored systems within normal range")
 	}
@@ -310,6 +314,7 @@ type LoggerHealth struct {
 	BTPresent      *int
 	ReconnectCount *int
 	RestartCount   *int
+	Restarts7d     *int // restarts in the last 7 days (a current loop vs old churn)
 	RTCOk          *int
 	LastError      *string
 }
@@ -331,6 +336,10 @@ func (s *Store) LoggerHealth(ctx context.Context) (LoggerHealth, bool, error) {
 		}
 		return LoggerHealth{}, false, err
 	}
+	// restart_count is a monotonic cumulative counter, so the spread over the last
+	// 7 days = restarts in that window (distinguishes a live loop from old churn).
+	_ = s.pool.QueryRow(ctx, `SELECT max(restart_count) - min(restart_count)
+		FROM pi_health_log WHERE timestamp > now() - interval '7 days'`).Scan(&h.Restarts7d)
 	return h, true, nil
 }
 
